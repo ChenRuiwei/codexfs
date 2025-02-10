@@ -128,9 +128,11 @@ dependencies = [
 name = "codexfs-fuse"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "codexfs-core",
  "fuser",
  "libc",
+ "log",
 ]
 
 [[package]]
