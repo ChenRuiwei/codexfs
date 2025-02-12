@@ -8,6 +8,8 @@ use std::{
     rc::Rc,
 };
 
+use bytemuck::bytes_of;
+
 use crate::{
     CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat, codexfs_blknr,
     codexfs_blkoff, codexfs_nid,
@@ -225,7 +227,7 @@ pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
             }
             let inode = CodexFsInode::from(&node_ref);
             sb.img_file
-                .write_all_at(inode.to_bytes(), sb.get_start_off())?;
+                .write_all_at(bytes_of(&inode), sb.get_start_off())?;
             sb.inc_start_off(size_of::<CodexFsInode>() as u64);
         }
         {
@@ -238,7 +240,7 @@ pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
             for dentry in node_ref.dentries.iter() {
                 let codexfs_dirent = CodexFsDirent::from(dentry);
                 sb.img_file
-                    .write_all_at(codexfs_dirent.to_bytes(), sb.get_start_off())?;
+                    .write_all_at(bytes_of(&codexfs_dirent), sb.get_start_off())?;
                 sb.inc_start_off(size_of::<CodexFsDirent>() as u64);
             }
             for dentry in node_ref.dentries.iter() {
@@ -258,7 +260,7 @@ pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
 
             let codexfs_inode = CodexFsInode::from(&node_ref);
             sb.img_file
-                .write_all_at(codexfs_inode.to_bytes(), sb.get_start_off())?;
+                .write_all_at(bytes_of(&codexfs_inode), sb.get_start_off())?;
         }
         {
             let mut node_mut = node.borrow_mut();

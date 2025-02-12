@@ -8,6 +8,7 @@ pub mod utils;
 use std::fs::FileType;
 
 use bitflags::bitflags;
+use bytemuck::{Pod, Zeroable};
 
 pub const CODEXFS_MAGIC: u32 = 0x114514;
 
@@ -29,7 +30,7 @@ pub fn codexfs_nid(addr: u64) -> u64 {
 }
 
 // codexfs on-disk super block (currently 128 bytes)
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
 pub struct CodexFsSuperBlock {
     pub magic: u32,    // file system magic number
@@ -42,20 +43,17 @@ pub struct CodexFsSuperBlock {
     pub reserved: [u8; 103],
 }
 
-impl CodexFsSuperBlock {
-    pub fn to_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(&self as *const _ as *const u8, size_of::<Self>()) }
-    }
-}
-
 // CODEXFS inode datalayout (i_format in on-disk inode):
 // 0 - uncompressed flat inode without tail-packing inline data:
 // 1 - compressed inode with non-compact indexes:
 // 2 - uncompressed flat inode with tail-packing inline data:
 // 3 - compressed inode with compact indexes:
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct CodexFsInodeFormat(u16);
+
 bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub struct CodexFsInodeFormat: u16 {
+    impl CodexFsInodeFormat: u16 {
         const CODEXFS_INODE_FLAT_PLAIN			= 1 << 0;
         const CODEXFS_INODE_COMPRESSED_FULL		= 1 << 1;
         const CODEXFS_INODE_FLAT_INLINE         = 1 << 2;
@@ -63,7 +61,7 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
 pub struct CodexFsInode {
     pub format: CodexFsInodeFormat,
@@ -78,14 +76,7 @@ pub struct CodexFsInode {
     pub reserved: [u8; 26], // reserved
 }
 
-impl CodexFsInode {
-    pub fn to_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(&self as *const _ as *const u8, size_of::<Self>()) }
-    }
-}
-
-// file types used in inode_info->flags
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Zeroable)]
 #[repr(u8)]
 pub enum CodexFsFileType {
     Unknown,
@@ -97,6 +88,8 @@ pub enum CodexFsFileType {
     Sock,
     Symlink,
 }
+
+unsafe impl Pod for CodexFsFileType {}
 
 impl From<FileType> for CodexFsFileType {
     fn from(val: FileType) -> Self {
@@ -112,19 +105,13 @@ impl From<FileType> for CodexFsFileType {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
 pub struct CodexFsDirent {
     pub nid: u64,                   // node number
     pub nameoff: u16,               // start offset of file name
     pub file_type: CodexFsFileType, // file type
     pub reserved: u8,               // reserved
-}
-
-impl CodexFsDirent {
-    pub fn to_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(&self as *const _ as *const u8, size_of::<Self>()) }
-    }
 }
 
 #[cfg(test)]
@@ -134,7 +121,7 @@ mod tests {
     #[test]
     fn check_ondisk_layout_definitions() {
         assert_eq!(size_of::<CodexFsSuperBlock>(), 128);
-        assert_eq!(size_of::<CodexFsInode>(), 64);
+        assert_eq!(size_of::<CodexFsInode>(), 1 << CODEXFS_ISLOT_BITS);
         assert_eq!(size_of::<CodexFsDirent>(), 12);
     }
 }

@@ -7,6 +7,8 @@ use std::{
     rc::Rc,
 };
 
+use bytemuck::{bytes_of, from_bytes, from_bytes_mut};
+
 use crate::{
     CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
     inode::Inode, utils::round_up,
@@ -89,10 +91,21 @@ pub fn get_mut_sb() -> &'static mut SuperBlock {
     unsafe { SUPER_BLOCK.get_mut().unwrap() }
 }
 
+pub fn load_super_block() -> io::Result<()> {
+    let mut buf = [0; CODEXFS_BLKSIZ as _];
+    get_sb()
+        .img_file
+        .read_exact_at(&mut buf, CODEXFS_SUPERBLK_OFF)?;
+    let codexfs_sb: &CodexFsSuperBlock = from_bytes::<_>(&buf);
+    let sb = get_mut_sb();
+
+    Ok(())
+}
+
 pub fn dump_super_block() -> io::Result<()> {
     let codexfs_sb = CodexFsSuperBlock::from(get_sb());
     get_sb()
         .img_file
-        .write_all_at(codexfs_sb.to_bytes(), CODEXFS_SUPERBLK_OFF)?;
+        .write_all_at(bytes_of(&codexfs_sb), CODEXFS_SUPERBLK_OFF)?;
     Ok(())
 }
