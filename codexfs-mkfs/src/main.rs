@@ -1,11 +1,6 @@
 // FIXME: types should be aligned when dumping
 // FIXME: dirent offset is not calculated yet
-
-#![feature(once_cell_get_mut)]
 #![allow(static_mut_refs)]
-
-mod inode;
-mod sb;
 
 use std::{
     cell::{OnceCell, RefCell},
@@ -14,8 +9,12 @@ use std::{
 };
 
 use clap::Parser;
-use codexfs_core::{utils::round_up, CODEXFS_BLKSIZ};
-use sb::{get_mut_sb, get_sb};
+use codexfs_core::{
+    inode,
+    sb::{self, get_mut_sb, get_sb, set_sb},
+    utils::round_up,
+    CODEXFS_BLKSIZ,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "mkfs.codexfs")]
@@ -48,6 +47,7 @@ fn parse_args() -> &'static Args {
 
 fn main() {
     let args = parse_args();
+    set_sb(Path::new(&args.img_path));
     let root = inode::load_inode_tree(Path::new(&args.src_path)).unwrap();
     get_mut_sb().init_root(Rc::new(RefCell::new(root)));
     let root = get_mut_sb().get_root();

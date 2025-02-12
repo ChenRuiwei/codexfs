@@ -3,15 +3,14 @@ use std::{
     fs::File,
     io,
     os::unix::fs::FileExt,
+    path::Path,
     rc::Rc,
 };
 
-use codexfs_core::{
-    utils::round_up, CodexFsSuperBlock, CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC,
-    CODEXFS_SUPERBLK_OFF,
+use crate::{
+    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
+    inode::Inode, utils::round_up,
 };
-
-use crate::{get_args, inode::Inode};
 
 #[derive(Debug)]
 pub struct SuperBlock {
@@ -22,14 +21,14 @@ pub struct SuperBlock {
 }
 
 impl SuperBlock {
-    fn new() -> Self {
+    fn new(img_file: File) -> Self {
         Self {
             ino: 0,
             start_off: round_up(
                 CODEXFS_SUPERBLK_OFF + size_of::<CodexFsSuperBlock>() as u64,
                 CODEXFS_BLKSIZ as u64,
             ),
-            img_file: File::create(&get_args().img_path).unwrap(),
+            img_file,
             root: OnceCell::new(),
         }
     }
@@ -77,12 +76,17 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
 
 static mut SUPER_BLOCK: OnceCell<SuperBlock> = OnceCell::new();
 
+pub fn set_sb(img_path: &Path) {
+    let img_file = File::create(img_path).unwrap();
+    unsafe { SUPER_BLOCK.set(SuperBlock::new(img_file)).unwrap() }
+}
+
 pub fn get_sb() -> &'static SuperBlock {
-    unsafe { SUPER_BLOCK.get_or_init(SuperBlock::new) }
+    unsafe { SUPER_BLOCK.get().unwrap() }
 }
 
 pub fn get_mut_sb() -> &'static mut SuperBlock {
-    unsafe { SUPER_BLOCK.get_mut_or_init(SuperBlock::new) }
+    unsafe { SUPER_BLOCK.get_mut().unwrap() }
 }
 
 pub fn dump_super_block() -> io::Result<()> {

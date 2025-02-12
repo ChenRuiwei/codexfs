@@ -3,18 +3,16 @@ use std::{
     collections::HashMap,
     fs::{self, File, FileType},
     io::{self, Read},
-    ops::{Deref, DerefMut},
     os::unix::fs::{FileExt, MetadataExt},
     path::Path,
     rc::Rc,
 };
 
-use codexfs_core::{
-    codexfs_blknr, codexfs_blkoff, codexfs_nid, CodexFsDirent, CodexFsFileType, CodexFsInode,
-    CodexFsInodeFormat,
+use crate::{
+    CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat, codexfs_blknr,
+    codexfs_blkoff, codexfs_nid,
+    sb::{get_mut_sb, get_sb},
 };
-
-use crate::sb::{get_mut_sb, get_sb};
 
 type InodeTable = HashMap<u64, Rc<RefCell<Inode>>>;
 
@@ -132,26 +130,10 @@ impl Dentry {
     }
 }
 
-struct CodexFsInodeWrapper(CodexFsInode);
-
-impl Deref for CodexFsInodeWrapper {
-    type Target = CodexFsInode;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for CodexFsInodeWrapper {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl From<&Ref<'_, Inode>> for CodexFsInodeWrapper {
+impl From<&Ref<'_, Inode>> for CodexFsInode {
     fn from(node: &Ref<'_, Inode>) -> Self {
         let metadata = node.path.metadata().unwrap();
-        Self(CodexFsInode {
+        Self {
             format: CodexFsInodeFormat::CODEXFS_INODE_FLAT_PLAIN,
             mode: metadata.mode(),
             nlink: node.cf_nlink,
@@ -162,7 +144,7 @@ impl From<&Ref<'_, Inode>> for CodexFsInodeWrapper {
             uid: metadata.uid(),
             gid: metadata.gid(),
             reserved: [0; 26],
-        })
+        }
     }
 }
 
@@ -241,7 +223,7 @@ pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
                 let child = &dentry.inode;
                 dump_inode_tree(child)?;
             }
-            let inode = CodexFsInodeWrapper::from(&node_ref);
+            let inode = CodexFsInode::from(&node_ref);
             sb.img_file
                 .write_all_at(inode.to_bytes(), sb.get_start_off())?;
             sb.inc_start_off(size_of::<CodexFsInode>() as u64);
@@ -274,7 +256,7 @@ pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
             sb.img_file
                 .write_all_at(&content, node_ref.cf_s_off.unwrap())?;
 
-            let codexfs_inode = CodexFsInodeWrapper::from(&node_ref);
+            let codexfs_inode = CodexFsInode::from(&node_ref);
             sb.img_file
                 .write_all_at(codexfs_inode.to_bytes(), sb.get_start_off())?;
         }
