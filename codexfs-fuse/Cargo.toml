@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-codexfs-core = { path = "../codexfs-core/" }
+codexfs-core = { workspace = true }
 
-fuser = "0.15"
-libc = "0.2"
-log = "0.4"
-clap = { version = "4.5", features = ["derive"] }
+fuser = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+clap = { workspace = true }
