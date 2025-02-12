@@ -38,6 +38,8 @@ fn parse_args() -> &'static Args {
 }
 
 fn main() {
+    env_logger::init();
+
     let args = parse_args();
     let options = vec![MountOption::FSName("fuser".to_string())];
     fuser::mount2(CodexFs, args.mnt_path.to_string(), &options).unwrap();

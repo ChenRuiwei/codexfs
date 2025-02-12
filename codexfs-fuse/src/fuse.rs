@@ -1,7 +1,7 @@
 use std::{ffi::OsStr, time::SystemTime};
 
 use fuser::{Filesystem, Request};
-use log::{debug, warn};
+use log::{debug, info, warn};
 
 pub struct CodexFs;
 
@@ -11,6 +11,7 @@ impl Filesystem for CodexFs {
         _req: &Request<'_>,
         _config: &mut fuser::KernelConfig,
     ) -> Result<(), libc::c_int> {
+        info!("Using FUSE protocol");
         Ok(())
     }
 
