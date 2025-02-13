@@ -7,7 +7,8 @@ use std::{
     rc::Rc,
 };
 
-use bytemuck::{bytes_of, from_bytes, from_bytes_mut};
+use bytemuck::{bytes_of, from_bytes};
+use libc::ino_t;
 
 use crate::{
     CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
@@ -16,7 +17,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct SuperBlock {
-    pub ino: u32,
+    pub ino: ino_t,
     pub start_off: u64,
     pub img_file: File,
     root: OnceCell<Rc<RefCell<Inode>>>,
@@ -35,15 +36,15 @@ impl SuperBlock {
         }
     }
 
-    pub fn init_root(&mut self, root: Rc<RefCell<Inode>>) {
-        self.root.set(root);
+    pub fn set_root(&mut self, root: Rc<RefCell<Inode>>) {
+        self.root.set(root).unwrap();
     }
 
     pub fn get_root(&self) -> &Rc<RefCell<Inode>> {
         self.root.get().unwrap()
     }
 
-    pub fn get_ino_and_inc(&mut self) -> u32 {
+    pub fn get_ino_and_inc(&mut self) -> ino_t {
         let ino = self.ino;
         self.ino += 1;
         ino
@@ -71,7 +72,7 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             root_nid: sb.get_root().borrow().cf_nid,
             inos: sb.ino,
             blocks: 0,
-            reserved: [0; 103],
+            reserved: [0; 99],
         }
     }
 }
@@ -92,7 +93,7 @@ pub fn get_mut_sb() -> &'static mut SuperBlock {
 }
 
 pub fn load_super_block() -> io::Result<()> {
-    let mut buf = [0; CODEXFS_BLKSIZ as _];
+    let mut buf = [0; size_of::<CodexFsSuperBlock>()];
     get_sb()
         .img_file
         .read_exact_at(&mut buf, CODEXFS_SUPERBLK_OFF)?;
@@ -107,5 +108,6 @@ pub fn dump_super_block() -> io::Result<()> {
     get_sb()
         .img_file
         .write_all_at(bytes_of(&codexfs_sb), CODEXFS_SUPERBLK_OFF)?;
+    Path::new("");
     Ok(())
 }

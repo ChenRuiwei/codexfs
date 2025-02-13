@@ -1,46 +1,50 @@
 use std::{
     cell::{OnceCell, Ref, RefCell},
     collections::HashMap,
-    fs::{self, File, FileType},
+    fs::{self, File},
     io::{self, Read},
     os::unix::fs::{FileExt, MetadataExt},
     path::Path,
     rc::Rc,
 };
 
-use bytemuck::bytes_of;
+use bytemuck::{bytes_of, checked::from_bytes};
+use libc::{gid_t, ino_t, mode_t, uid_t};
 
 use crate::{
-    CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat, codexfs_blknr,
-    codexfs_blkoff, codexfs_nid,
+    CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat,
+    codexfs_blknr, codexfs_blkoff, codexfs_nid,
     sb::{get_mut_sb, get_sb},
 };
 
-type InodeTable = HashMap<u64, Rc<RefCell<Inode>>>;
+type InodeTable = HashMap<ino_t, Rc<RefCell<Inode>>>;
 
 fn get_mut_inode_table() -> &'static mut InodeTable {
     static mut FILE_NODE_TABLE: OnceCell<InodeTable> = OnceCell::new();
     unsafe { FILE_NODE_TABLE.get_mut_or_init(HashMap::new) }
 }
 
-fn get_inode(ino: u64) -> Option<&'static Rc<RefCell<Inode>>> {
+fn get_inode(ino: ino_t) -> Option<&'static Rc<RefCell<Inode>>> {
     get_mut_inode_table().get(&ino)
 }
 
-fn insert_inode(ino: u64, node: Rc<RefCell<Inode>>) {
+fn insert_inode(ino: ino_t, node: Rc<RefCell<Inode>>) {
     get_mut_inode_table().insert(ino, node);
 }
 
 #[derive(Debug)]
 pub struct Inode {
     pub path: Box<Path>,
-    pub file_type: FileType,
+    pub file_type: CodexFsFileType,
     pub size: u64,
     pub dentries: Vec<Dentry>, // TODO: handle dot and dotdot
 
     // Fields prefixed with "cf" (for codexfs) are unrelated to the original file system.
     pub cf_s_off: Option<u64>,
-    pub cf_ino: u32,
+    pub cf_ino: ino_t,
+    pub cf_uid: uid_t,
+    pub cf_gid: gid_t,
+    pub cf_mode: mode_t,
     pub cf_nid: u64,
     pub cf_nlink: u16,
 }
@@ -49,7 +53,7 @@ pub struct Inode {
 pub struct Dentry {
     pub path: Box<Path>,
     pub file_name: String,
-    pub file_type: FileType,
+    pub file_type: CodexFsFileType,
     pub inode: Rc<RefCell<Inode>>,
 }
 
@@ -58,13 +62,16 @@ impl Inode {
         let metadata = path.metadata().unwrap();
         Self {
             path: path.into(),
-            file_type: metadata.file_type(),
+            file_type: metadata.file_type().into(),
             dentries: Vec::new(),
-            cf_s_off: None,
             size: metadata.len(),
+            cf_s_off: None,
             cf_nlink: 0,
             cf_ino: get_mut_sb().get_ino_and_inc(),
+            cf_gid: metadata.gid(),
+            cf_uid: metadata.uid(),
             cf_nid: 0,
+            cf_mode: metadata.mode(),
         }
     }
 
@@ -72,13 +79,16 @@ impl Inode {
         let metadata = path.metadata().unwrap();
         Self {
             path: path.into(),
-            file_type: metadata.file_type(),
+            file_type: metadata.file_type().into(),
             dentries: Vec::new(),
             cf_s_off: None,
             size: metadata.len(),
             cf_nlink: 2,
             cf_ino: get_mut_sb().get_ino_and_inc(),
             cf_nid: 0,
+            cf_mode: metadata.mode(),
+            cf_gid: metadata.gid(),
+            cf_uid: metadata.uid(),
         }
     }
 
@@ -88,10 +98,6 @@ impl Inode {
 
     fn add_dentry(&mut self, dentry: Dentry) {
         self.dentries.push(dentry);
-    }
-
-    fn file_type(&self) -> FileType {
-        self.file_type
     }
 
     pub fn print_recursive(&self, depth: usize) {
@@ -118,7 +124,7 @@ impl Dentry {
         Dentry {
             path: path.into(),
             file_name: path.file_name().unwrap().to_string_lossy().to_string(),
-            file_type: metadata.file_type(),
+            file_type: metadata.file_type().into(),
             inode: node,
         }
     }
@@ -126,26 +132,21 @@ impl Dentry {
     fn file_name(&self) -> &str {
         &self.file_name
     }
-
-    fn file_type(&self) -> FileType {
-        self.file_type
-    }
 }
 
 impl From<&Ref<'_, Inode>> for CodexFsInode {
     fn from(node: &Ref<'_, Inode>) -> Self {
-        let metadata = node.path.metadata().unwrap();
         Self {
             format: CodexFsInodeFormat::CODEXFS_INODE_FLAT_PLAIN,
-            mode: metadata.mode(),
+            mode: node.cf_mode,
             nlink: node.cf_nlink,
             size: node.size,
             blknr: codexfs_blknr(node.cf_s_off.unwrap_or(0)),
             blkoff: codexfs_blkoff(node.cf_s_off.unwrap_or(0)),
             ino: node.cf_ino,
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-            reserved: [0; 26],
+            uid: node.cf_uid,
+            gid: node.cf_gid,
+            reserved: [0; 22],
         }
     }
 }
@@ -181,7 +182,7 @@ pub fn load_inode_tree(path: &Path) -> Result<Inode, std::io::Error> {
         } else {
             let child = get_inode(entry_ino).cloned().unwrap_or_else(|| {
                 let child = Inode::new(&entry_path);
-                assert!(child.file_type().is_file());
+                assert!(child.file_type.is_file());
                 Rc::new(RefCell::new(child))
             });
             child.borrow_mut().inc_nlink();
@@ -199,11 +200,11 @@ pub fn load_inode_tree(path: &Path) -> Result<Inode, std::io::Error> {
 pub fn calc_inode_off(root: &Rc<RefCell<Inode>>) {
     for dentry in root.borrow_mut().dentries.iter_mut() {
         let child = &dentry.inode;
-        if child.borrow().file_type().is_dir() {
+        if child.borrow().file_type.is_dir() {
             calc_inode_off(child);
         } else {
             let mut child = child.borrow_mut();
-            assert!(child.file_type().is_file());
+            assert!(child.file_type.is_file());
             let start_off = get_sb().get_start_off();
             if child.cf_s_off.is_none() {
                 child.cf_s_off = Some(start_off);
@@ -216,7 +217,7 @@ pub fn calc_inode_off(root: &Rc<RefCell<Inode>>) {
 // FIXME: dirent off should be calculated
 pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
     let sb = get_mut_sb();
-    let file_type = node.borrow().file_type();
+    let file_type = node.borrow().file_type;
 
     if file_type.is_dir() {
         {
@@ -272,4 +273,23 @@ pub fn dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn load_inode(nid: u64) -> io::Result<Inode> {
+    let mut buf = [0; size_of::<CodexFsInode>()];
+    get_sb()
+        .img_file
+        .read_exact_at(&mut buf, nid >> CODEXFS_ISLOT_BITS)?;
+    let codexfs_inode: &CodexFsInode = from_bytes(&buf);
+    let file_type: CodexFsFileType = codexfs_inode.mode.into();
+    match file_type {
+        CodexFsFileType::Unknown => todo!(),
+        CodexFsFileType::File => todo!(),
+        CodexFsFileType::Dir => todo!(),
+        CodexFsFileType::CharDevice => todo!(),
+        CodexFsFileType::BlockDevice => todo!(),
+        CodexFsFileType::Fifo => todo!(),
+        CodexFsFileType::Socket => todo!(),
+        CodexFsFileType::Symlink => todo!(),
+    }
 }

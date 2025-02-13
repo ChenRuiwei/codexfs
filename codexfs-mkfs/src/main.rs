@@ -49,7 +49,7 @@ fn main() {
     let args = parse_args();
     set_sb(Path::new(&args.img_path));
     let root = inode::load_inode_tree(Path::new(&args.src_path)).unwrap();
-    get_mut_sb().init_root(Rc::new(RefCell::new(root)));
+    get_mut_sb().set_root(Rc::new(RefCell::new(root)));
     let root = get_mut_sb().get_root();
 
     inode::calc_inode_off(root);
