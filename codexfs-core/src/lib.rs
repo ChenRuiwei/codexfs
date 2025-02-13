@@ -1,4 +1,5 @@
 #![feature(once_cell_get_mut)]
+#![feature(generic_arg_infer)]
 #![allow(static_mut_refs)]
 
 pub mod inode;
@@ -9,9 +10,12 @@ use std::{fs::FileType, os::unix::fs::FileTypeExt};
 
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
-use libc::{
-    S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK, gid_t, ino_t, mode_t, uid_t,
-};
+use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
+
+type gid_t = libc::gid_t;
+type uid_t = libc::uid_t;
+type ino_t = libc::ino_t;
+type mode_t = libc::mode_t;
 
 pub const CODEXFS_MAGIC: u32 = 0x114514;
 
@@ -71,12 +75,11 @@ pub struct CodexFsInode {
     pub mode: mode_t,
     pub nlink: u16,
     pub size: u64,
-    pub blknr: u64,
-    pub blkoff: u16,
+    pub blkpos: u64,
     pub ino: ino_t,
     pub uid: uid_t,
     pub gid: gid_t,
-    pub reserved: [u8; 22], // reserved
+    pub reserved: [u8; 24], // reserved
 }
 
 #[derive(Clone, Copy, Debug)]

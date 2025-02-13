@@ -8,11 +8,10 @@ use std::{
 };
 
 use bytemuck::{bytes_of, from_bytes};
-use libc::ino_t;
 
 use crate::{
     CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
-    inode::Inode, utils::round_up,
+    ino_t, inode::Inode, utils::round_up,
 };
 
 #[derive(Debug)]
@@ -72,7 +71,7 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             root_nid: sb.get_root().borrow().cf_nid,
             inos: sb.ino,
             blocks: 0,
-            reserved: [0; 99],
+            reserved: [0; _],
         }
     }
 }
@@ -103,7 +102,7 @@ pub fn load_super_block() -> io::Result<()> {
     Ok(())
 }
 
-pub fn dump_super_block() -> io::Result<()> {
+pub fn mkfs_dump_super_block() -> io::Result<()> {
     let codexfs_sb = CodexFsSuperBlock::from(get_sb());
     get_sb()
         .img_file

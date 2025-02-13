@@ -48,14 +48,14 @@ fn parse_args() -> &'static Args {
 fn main() {
     let args = parse_args();
     set_sb(Path::new(&args.img_path));
-    let root = inode::load_inode_tree(Path::new(&args.src_path)).unwrap();
+    let root = inode::mkfs_load_inode_tree(Path::new(&args.src_path)).unwrap();
     get_mut_sb().set_root(Rc::new(RefCell::new(root)));
     let root = get_mut_sb().get_root();
 
-    inode::calc_inode_off(root);
+    inode::mkfs_calc_inode_off(root);
 
     get_mut_sb().set_start_off(round_up(get_sb().get_start_off(), CODEXFS_BLKSIZ as _));
-    inode::dump_inode_tree(root).unwrap();
+    inode::mkfs_dump_inode_tree(root).unwrap();
     root.borrow().print_recursive(0);
-    sb::dump_super_block().unwrap();
+    sb::mkfs_dump_super_block().unwrap();
 }
