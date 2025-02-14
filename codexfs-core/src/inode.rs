@@ -8,6 +8,7 @@ use std::{
     rc::Rc,
 };
 
+use anyhow::Result;
 use bytemuck::{bytes_of, checked::from_bytes};
 
 use crate::{
@@ -92,6 +93,35 @@ impl Inode {
         }
     }
 
+    pub fn from_nid(nid: u64) -> Result<Self> {
+        let mut inode_buf = [0; size_of::<CodexFsInode>()];
+        get_sb()
+            .img_file
+            .read_exact_at(&mut inode_buf, nid >> CODEXFS_ISLOT_BITS)?;
+        let codexfs_inode: &CodexFsInode = from_bytes(&inode_buf);
+        Ok(Self::from_codexfs_inode(codexfs_inode, nid))
+    }
+
+    fn from_codexfs_inode(codexfs_inode: &CodexFsInode, nid: u64) -> Self {
+        Self {
+            path: None,
+            file_type: CodexFsFileType::from(codexfs_inode.mode),
+            size: codexfs_inode.size,
+            dentries: Vec::new(),
+            cf_blkpos: if codexfs_inode.blkpos != 0 {
+                Some(codexfs_inode.blkpos)
+            } else {
+                None
+            },
+            cf_ino: codexfs_inode.ino,
+            cf_uid: codexfs_inode.uid,
+            cf_gid: codexfs_inode.gid,
+            cf_mode: codexfs_inode.mode,
+            cf_nid: nid,
+            cf_nlink: codexfs_inode.nlink,
+        }
+    }
+
     pub fn path(&self) -> &Path {
         self.path.as_ref().unwrap()
     }
@@ -144,7 +174,7 @@ impl From<&Ref<'_, Inode>> for CodexFsInode {
             mode: node.cf_mode,
             nlink: node.cf_nlink,
             size: node.size,
-            blkpos: node.cf_blkpos.unwrap(),
+            blkpos: node.cf_blkpos.unwrap_or(0),
             ino: node.cf_ino,
             uid: node.cf_uid,
             gid: node.cf_gid,

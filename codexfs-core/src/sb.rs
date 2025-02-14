@@ -7,11 +7,12 @@ use std::{
     rc::Rc,
 };
 
+use anyhow::Result;
 use bytemuck::{bytes_of, from_bytes};
 
 use crate::{
-    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
-    ino_t, inode::Inode, utils::round_up,
+    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF,
+    CodexFsInode, CodexFsSuperBlock, codexfs_nid, ino_t, inode::Inode, utils::round_up,
 };
 
 #[derive(Debug)]
@@ -78,8 +79,7 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
 
 static mut SUPER_BLOCK: OnceCell<SuperBlock> = OnceCell::new();
 
-pub fn set_sb(img_path: &Path) {
-    let img_file = File::create(img_path).unwrap();
+pub fn set_sb(img_file: File) {
     unsafe { SUPER_BLOCK.set(SuperBlock::new(img_file)).unwrap() }
 }
 
@@ -91,14 +91,14 @@ pub fn get_mut_sb() -> &'static mut SuperBlock {
     unsafe { SUPER_BLOCK.get_mut().unwrap() }
 }
 
-pub fn load_super_block() -> io::Result<()> {
-    let mut buf = [0; size_of::<CodexFsSuperBlock>()];
+pub fn load_super_block() -> Result<()> {
+    let mut sb_buf = [0; size_of::<CodexFsSuperBlock>()];
     get_sb()
         .img_file
-        .read_exact_at(&mut buf, CODEXFS_SUPERBLK_OFF)?;
-    let codexfs_sb: &CodexFsSuperBlock = from_bytes::<_>(&buf);
+        .read_exact_at(&mut sb_buf, CODEXFS_SUPERBLK_OFF)?;
+    let codexfs_sb: &CodexFsSuperBlock = from_bytes(&sb_buf);
     let sb = get_mut_sb();
-
+    sb.set_root(Rc::new(RefCell::new(Inode::from_nid(codexfs_sb.root_nid)?)));
     Ok(())
 }
 
@@ -107,6 +107,5 @@ pub fn mkfs_dump_super_block() -> io::Result<()> {
     get_sb()
         .img_file
         .write_all_at(bytes_of(&codexfs_sb), CODEXFS_SUPERBLK_OFF)?;
-    Path::new("");
     Ok(())
 }

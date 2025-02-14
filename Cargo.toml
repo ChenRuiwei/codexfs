@@ -5,6 +5,7 @@ members = ["codexfs-fuse", "codexfs-core", "codexfs-mkfs"]
 
 [workspace.dependencies]
 codexfs-core = { path = "./codexfs-core/" }
+
 clap = { version = "4.5", features = ["derive"] }
 fuser = "0.15"
 libc = "0.2"
@@ -13,3 +14,4 @@ env_logger = "0.11"
 bitflags = "2.8"
 num-traits = "0.2"
 bytemuck = { version = "1.21", features = ["derive", "min_const_generics"] }
+anyhow = "1.0"

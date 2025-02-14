@@ -3,10 +3,10 @@
 
 mod fuse;
 
-use std::{cell::OnceCell, path::Path};
+use std::{cell::OnceCell, fs::File};
 
 use clap::Parser;
-use codexfs_core::sb::set_sb;
+use codexfs_core::sb::{self, set_sb};
 use fuse::CodexFs;
 use fuser::MountOption;
 
@@ -42,8 +42,11 @@ fn main() {
     env_logger::init();
 
     let args = parse_args();
-    set_sb(&Path::new(&args.img_path));
+    let img_file = File::open(&args.img_path).unwrap();
+    set_sb(img_file);
+
+    sb::load_super_block().unwrap();
 
     let options = vec![MountOption::FSName("fuser".to_string())];
-    fuser::mount2(CodexFs, args.mnt_path.to_string(), &options).unwrap();
+    fuser::mount2(CodexFs, &args.mnt_path, &options).unwrap();
 }
