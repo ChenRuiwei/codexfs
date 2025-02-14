@@ -5,7 +5,7 @@ use std::{
     io::{self, Read},
     os::unix::fs::{FileExt, MetadataExt},
     path::{Path, PathBuf},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use anyhow::Result;
@@ -29,8 +29,13 @@ fn get_inode(ino: ino_t) -> Option<&'static Rc<RefCell<Inode>>> {
     get_mut_inode_table().get(&ino)
 }
 
-fn insert_inode(ino: ino_t, node: Rc<RefCell<Inode>>) {
-    get_mut_inode_table().insert(ino, node);
+fn get_inode_by_path(path: &Path) -> Option<&'static Rc<RefCell<Inode>>> {
+    let ino = path.metadata().unwrap().ino();
+    get_inode(ino)
+}
+
+fn insert_inode(ino: ino_t, inode: Rc<RefCell<Inode>>) {
+    get_mut_inode_table().insert(ino, inode);
 }
 
 #[derive(Debug)]
@@ -38,7 +43,8 @@ pub struct Inode {
     pub path: Option<PathBuf>,
     pub file_type: CodexFsFileType,
     pub size: u64,
-    pub dentries: Vec<Dentry>, // TODO: handle dot and dotdot
+    pub dentries: Vec<Dentry>,                // TODO: handle dot and dotdot
+    pub parent: Option<Weak<RefCell<Inode>>>, // only for dir inode, while root points to itself
 
     // Fields prefixed with "cf" (for codexfs) are unrelated to the original file system.
     pub cf_blkpos: Option<u64>,
@@ -73,23 +79,27 @@ impl Inode {
             cf_uid: metadata.uid(),
             cf_nid: 0,
             cf_mode: metadata.mode(),
+            parent: None,
         }
     }
 
     fn new_dir(path: &Path) -> Self {
         let metadata = path.metadata().unwrap();
+        let file_type: CodexFsFileType = metadata.file_type().into();
+        assert!(file_type.is_dir());
         Self {
             path: Some(path.into()),
-            file_type: metadata.file_type().into(),
+            file_type,
             dentries: Vec::new(),
             cf_blkpos: None,
             size: metadata.len(),
-            cf_nlink: 2,
+            cf_nlink: 2, // for "." and ".."
             cf_ino: get_mut_sb().get_ino_and_inc(),
             cf_nid: 0,
             cf_mode: metadata.mode(),
             cf_gid: metadata.gid(),
             cf_uid: metadata.uid(),
+            parent: None,
         }
     }
 
@@ -119,11 +129,23 @@ impl Inode {
             cf_mode: codexfs_inode.mode,
             cf_nid: nid,
             cf_nlink: codexfs_inode.nlink,
+            parent: None,
         }
     }
 
     pub fn path(&self) -> &Path {
         self.path.as_ref().unwrap()
+    }
+
+    pub fn parent(&self) -> Rc<RefCell<Inode>> {
+        assert!(self.file_type.is_dir());
+        self.parent.as_ref().unwrap().upgrade().unwrap()
+    }
+
+    pub fn set_parent(&mut self, parent: Weak<RefCell<Inode>>) {
+        assert!(self.file_type.is_dir());
+        assert!(self.parent.is_none());
+        self.parent = Some(parent);
     }
 
     fn inc_nlink(&mut self) {
@@ -194,39 +216,63 @@ impl From<&Dentry> for CodexFsDirent {
     }
 }
 
-pub fn mkfs_load_inode_tree(path: &Path) -> Result<Inode, std::io::Error> {
+fn mkfs_load_inode_dir(path: &Path) -> Result<Rc<RefCell<Inode>>> {
     assert!(path.is_dir());
 
-    let mut root = Inode::new_dir(path);
+    let dir = Rc::new(RefCell::new(Inode::new_dir(path)));
 
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let entry_path = entry.path();
-        let entry_ino = entry.metadata()?.ino();
 
-        if entry_path.is_dir() {
-            let child = mkfs_load_inode_tree(&entry_path)?;
-            let child = Rc::new(RefCell::new(child));
-            insert_inode(entry_ino, child.clone());
-            let child_dentry = Dentry::new(&entry_path, child);
-            root.inc_nlink();
-            root.add_dentry(child_dentry);
-        } else {
-            let child = get_inode(entry_ino).cloned().unwrap_or_else(|| {
-                let child = Inode::new(&entry_path);
-                assert!(child.file_type.is_file());
-                Rc::new(RefCell::new(child))
-            });
-            child.borrow_mut().inc_nlink();
-            insert_inode(entry_ino, child.clone());
-            let child_dentry = Dentry::new(&entry_path, child);
-            root.add_dentry(child_dentry);
+        let child = mkfs_load_inode(&entry_path, Some(Rc::downgrade(&dir)))?;
+        let child_dentry = Dentry::new(&entry_path, child);
+
+        if child_dentry.file_type.is_dir() {
+            dir.borrow_mut().inc_nlink();
         }
+        dir.borrow_mut().add_dentry(child_dentry);
 
         println!("{}", entry.path().to_string_lossy());
     }
 
-    Ok(root)
+    Ok(dir)
+}
+
+pub fn mkfs_load_inode(
+    path: &Path,
+    parent: Option<Weak<RefCell<Inode>>>,
+) -> Result<Rc<RefCell<Inode>>> {
+    let metadata = path.metadata()?;
+    let ino = metadata.ino();
+    let file_type: CodexFsFileType = metadata.file_type().into();
+
+    let inode = match file_type {
+        CodexFsFileType::Unknown => panic!(),
+        CodexFsFileType::File => {
+            let inode = get_inode(ino).cloned().unwrap_or_else(|| {
+                let child = Inode::new(path);
+                Rc::new(RefCell::new(child))
+            });
+            inode.borrow_mut().inc_nlink();
+            inode
+        }
+        CodexFsFileType::Dir => {
+            let inode = mkfs_load_inode_dir(path)?;
+            let parent = parent.unwrap_or_else(|| Rc::downgrade(&inode));
+            inode.borrow_mut().set_parent(parent);
+            inode
+        }
+        CodexFsFileType::CharDevice => todo!(),
+        CodexFsFileType::BlockDevice => todo!(),
+        CodexFsFileType::Fifo => todo!(),
+        CodexFsFileType::Socket => todo!(),
+        CodexFsFileType::Symlink => todo!(),
+    };
+
+    insert_inode(ino, inode.clone());
+
+    Ok(inode)
 }
 
 pub fn mkfs_calc_inode_off(root: &Rc<RefCell<Inode>>) {
@@ -328,6 +374,7 @@ pub fn load_inode(nid: u64) -> io::Result<Inode> {
             cf_mode: codexfs_inode.mode,
             cf_nid: nid,
             cf_nlink: codexfs_inode.nlink,
+            parent: todo!(),
         },
         CodexFsFileType::Dir => Inode {
             path: None,
@@ -341,6 +388,7 @@ pub fn load_inode(nid: u64) -> io::Result<Inode> {
             cf_mode: codexfs_inode.mode,
             cf_nid: nid,
             cf_nlink: codexfs_inode.nlink,
+            parent: todo!(),
         },
         CodexFsFileType::CharDevice => todo!(),
         CodexFsFileType::BlockDevice => todo!(),
@@ -349,4 +397,63 @@ pub fn load_inode(nid: u64) -> io::Result<Inode> {
         CodexFsFileType::Symlink => todo!(),
     };
     Ok(inode)
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        fs::{self, File},
+        path::{Path, absolute},
+        rc::Rc,
+    };
+
+    use anyhow::{Ok, Result};
+
+    use crate::{
+        inode::{get_inode_by_path, mkfs_load_inode},
+        sb::set_sb,
+    };
+
+    #[test]
+    fn check_mkfs_load_inode() -> Result<()> {
+        // .
+        // ├── hello.txt
+        // └── subdir
+        //     └── hello.txt.hardlink
+
+        let root = Path::new("cargo-test-fs.tmp");
+        let img_path = Path::new("cargo-test-img.tmp");
+        let subdir = root.join("subdir");
+        let hello = root.join("hello.txt");
+        let hardlink = subdir.join("hello.txt.hardlink");
+
+        if root.exists() {
+            fs::remove_dir_all(root)?;
+        }
+
+        fs::create_dir(root)?;
+        fs::create_dir(&subdir)?;
+        fs::write(&hello, "Hello world!")?;
+        fs::hard_link(&hello, &hardlink)?;
+
+        {
+            set_sb(File::create(img_path)?);
+            let root_inode = mkfs_load_inode(root, None)?;
+            let subdir_inode = get_inode_by_path(&subdir).unwrap();
+            let hello_inode = get_inode_by_path(&hello).unwrap();
+            let hardlink_inode = get_inode_by_path(&hardlink).unwrap();
+
+            assert!(Rc::ptr_eq(&root_inode.borrow().parent(), &root_inode));
+            assert!(Rc::ptr_eq(hello_inode, hardlink_inode));
+
+            assert_eq!(root_inode.borrow().cf_nlink, 3);
+            assert_eq!(subdir_inode.borrow().cf_nlink, 2);
+            assert_eq!(hello_inode.borrow().cf_nlink, 2);
+        }
+
+        fs::remove_dir_all(root)?;
+        fs::remove_file(img_path)?;
+
+        Ok(())
+    }
 }

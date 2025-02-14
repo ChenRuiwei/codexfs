@@ -50,8 +50,8 @@ fn main() {
     let args = parse_args();
     let img_file = File::create(&args.img_path).unwrap();
     set_sb(img_file);
-    let root = inode::mkfs_load_inode_tree(Path::new(&args.src_path)).unwrap();
-    get_mut_sb().set_root(Rc::new(RefCell::new(root)));
+    let root = inode::mkfs_load_inode(Path::new(&args.src_path), None).unwrap();
+    get_mut_sb().set_root(root);
     let root = get_mut_sb().get_root();
 
     inode::mkfs_calc_inode_off(root);

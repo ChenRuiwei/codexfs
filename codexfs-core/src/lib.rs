@@ -84,7 +84,6 @@ pub struct CodexFsInode {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[repr(u8)]
 pub enum CodexFsFileType {
     Unknown,
     File,
