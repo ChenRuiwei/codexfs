@@ -1,7 +1,41 @@
-use std::{ffi::OsStr, time::SystemTime};
+use std::{
+    ffi::OsStr,
+    time::{Duration, SystemTime},
+};
 
-use fuser::{Filesystem, Request};
+use codexfs_core::{
+    inode::load_inode, sb::get_sb, utils::round_up, CodexFsFileType, CODEXFS_BLKSIZ,
+    CODEXFS_BLKSIZ_BITS,
+};
+use fuser::{FileAttr, FileType, Filesystem, Request, FUSE_ROOT_ID};
 use log::{debug, info, warn};
+
+fn codexfsfuse_to_nid(ino: u64) -> u64 {
+    if ino == FUSE_ROOT_ID {
+        return get_sb().get_root().borrow().cf_nid;
+    }
+    ino - FUSE_ROOT_ID
+}
+
+fn codexfsfuse_to_ino(nid: u64) -> u64 {
+    if nid == get_sb().get_root().borrow().cf_nid {
+        return FUSE_ROOT_ID;
+    }
+    nid + FUSE_ROOT_ID
+}
+
+fn codexfsfuse_filetype_cast(file_type: CodexFsFileType) -> fuser::FileType {
+    match file_type {
+        CodexFsFileType::Unknown => todo!(),
+        CodexFsFileType::File => FileType::RegularFile,
+        CodexFsFileType::Dir => FileType::Directory,
+        CodexFsFileType::CharDevice => FileType::CharDevice,
+        CodexFsFileType::BlockDevice => FileType::BlockDevice,
+        CodexFsFileType::Fifo => FileType::NamedPipe,
+        CodexFsFileType::Socket => FileType::Socket,
+        CodexFsFileType::Symlink => FileType::Symlink,
+    }
+}
 
 pub struct CodexFs;
 
@@ -28,11 +62,29 @@ impl Filesystem for CodexFs {
     fn forget(&mut self, _req: &Request<'_>, _ino: u64, _nlookup: u64) {}
 
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, fh: Option<u64>, reply: fuser::ReplyAttr) {
-        warn!(
-            "[Not Implemented] getattr(ino: {:#x?}, fh: {:#x?})",
-            ino, fh
+        info!("getattr(ino: {:#x?}, fh: {:#x?})", ino, fh);
+        let inode = load_inode(codexfsfuse_to_nid(ino)).unwrap();
+        let inode = inode.borrow();
+        reply.attr(
+            &Duration::new(0, 0),
+            &FileAttr {
+                ino,
+                size: inode.cf_size,
+                blocks: round_up(inode.cf_size, CODEXFS_BLKSIZ as _) >> CODEXFS_BLKSIZ_BITS,
+                atime: SystemTime::now(),
+                mtime: SystemTime::now(),
+                ctime: SystemTime::now(),
+                crtime: SystemTime::now(),
+                kind: codexfsfuse_filetype_cast(inode.file_type),
+                perm: inode.cf_mode as _,
+                nlink: inode.cf_nlink as _,
+                uid: inode.cf_uid,
+                gid: inode.cf_gid,
+                rdev: 0,
+                blksize: 0,
+                flags: 0,
+            },
         );
-        reply.error(libc::ENOSYS);
     }
 
     fn setattr(
