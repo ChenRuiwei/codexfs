@@ -42,6 +42,8 @@ fn parse_args() -> &'static Args {
 }
 
 fn main() {
+    env_logger::init();
+
     let args = parse_args();
     let img_file = File::create(&args.img_path).unwrap();
     set_sb(img_file);

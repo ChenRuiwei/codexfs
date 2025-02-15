@@ -7,3 +7,4 @@ edition = "2021"
 codexfs-core = { workspace = true }
 
 clap = { workspace = true }
+env_logger = { workspace = true }

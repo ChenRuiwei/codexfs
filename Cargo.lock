@@ -159,6 +159,7 @@ dependencies = [
  "bitflags",
  "bytemuck",
  "libc",
+ "log",
  "num-traits",
 ]
 
@@ -180,6 +181,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codexfs-core",
+ "env_logger",
 ]
 
 [[package]]

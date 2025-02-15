@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::Result;
 use bytemuck::{bytes_of, checked::from_bytes};
+use log::info;
 
 use crate::{
     CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat,
@@ -67,7 +68,7 @@ pub struct Dentry {
 impl Inode {
     fn new(path: &Path) -> Self {
         let metadata = path.symlink_metadata().unwrap();
-        println!("{}, size {}", path.display(), metadata.len());
+        info!("{}, size {}", path.display(), metadata.len());
         Self {
             path: Some(path.into()),
             file_type: metadata.file_type().into(),
@@ -88,7 +89,7 @@ impl Inode {
         let metadata = path.symlink_metadata().unwrap();
         let file_type: CodexFsFileType = metadata.file_type().into();
         assert!(file_type.is_dir());
-        println!("{}, size {}", path.display(), metadata.len());
+        info!("{}, size {}", path.display(), metadata.len());
         Self {
             path: Some(path.into()),
             file_type,
@@ -239,8 +240,6 @@ fn mkfs_load_inode_dir(path: &Path) -> Result<Rc<RefCell<Inode>>> {
             dir.borrow_mut().inc_nlink();
         }
         dir.borrow_mut().add_dentry(child_dentry);
-
-        println!("{}", entry.path().display());
     }
 
     Ok(dir)
@@ -250,14 +249,10 @@ pub fn mkfs_load_inode(
     path: &Path,
     parent: Option<Weak<RefCell<Inode>>>,
 ) -> Result<Rc<RefCell<Inode>>> {
-    println!("aaaa {}", path.display());
     let metadata = path.symlink_metadata()?;
     let ino = metadata.ino();
 
-    println!("is symlink {:?}", metadata.file_type().is_symlink());
     let file_type = metadata.file_type().into();
-
-    println!("file type {:?}", file_type);
     let inode = match file_type {
         CodexFsFileType::Unknown => panic!(),
         CodexFsFileType::File | CodexFsFileType::Symlink => {
