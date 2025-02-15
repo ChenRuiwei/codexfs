@@ -1,9 +1,7 @@
 use std::{
     cell::{OnceCell, RefCell},
     fs::File,
-    io,
     os::unix::fs::FileExt,
-    path::Path,
     rc::Rc,
 };
 
@@ -11,8 +9,10 @@ use anyhow::Result;
 use bytemuck::{bytes_of, from_bytes};
 
 use crate::{
-    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF,
-    CodexFsInode, CodexFsSuperBlock, codexfs_nid, ino_t, inode::Inode, utils::round_up,
+    CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
+    buffer::{BufferType, get_mut_bufmgr},
+    ino_t,
+    inode::Inode,
 };
 
 #[derive(Debug)]
@@ -27,10 +27,7 @@ impl SuperBlock {
     fn new(img_file: File) -> Self {
         Self {
             ino: 0,
-            start_off: round_up(
-                CODEXFS_SUPERBLK_OFF + size_of::<CodexFsSuperBlock>() as u64,
-                CODEXFS_BLKSIZ as u64,
-            ),
+            start_off: 0,
             img_file,
             root: OnceCell::new(),
         }
@@ -102,7 +99,12 @@ pub fn load_super_block() -> Result<()> {
     Ok(())
 }
 
-pub fn mkfs_dump_super_block() -> io::Result<()> {
+pub fn mkfs_balloc_super_block() {
+    let pos = get_mut_bufmgr().balloc(size_of::<CodexFsSuperBlock>() as _, BufferType::Meta);
+    assert_eq!(pos, CODEXFS_SUPERBLK_OFF);
+}
+
+pub fn mkfs_dump_super_block() -> Result<()> {
     let codexfs_sb = CodexFsSuperBlock::from(get_sb());
     get_sb()
         .img_file

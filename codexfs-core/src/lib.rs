@@ -2,6 +2,7 @@
 #![feature(generic_arg_infer)]
 #![allow(static_mut_refs)]
 
+pub mod buffer;
 pub mod inode;
 pub mod sb;
 pub mod utils;
@@ -12,6 +13,7 @@ use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
+use utils::round_up;
 
 type gid_t = libc::gid_t;
 type uid_t = libc::uid_t;
@@ -34,6 +36,7 @@ pub fn codexfs_blkoff(addr: u64) -> u16 {
 }
 
 pub fn codexfs_nid(addr: u64) -> u64 {
+    assert_eq!(addr, round_up(addr, CODEXFS_ISLOT_BITS));
     addr >> CODEXFS_ISLOT_BITS
 }
 

@@ -1,5 +1,3 @@
-// FIXME: types should be aligned when dumping
-// FIXME: dirent offset is not calculated yet
 #![allow(static_mut_refs)]
 
 use std::{cell::OnceCell, fs::File, path::Path};
@@ -8,8 +6,6 @@ use clap::Parser;
 use codexfs_core::{
     inode,
     sb::{self, get_mut_sb, get_sb, set_sb},
-    utils::round_up,
-    CODEXFS_BLKSIZ,
 };
 
 #[derive(Debug, Parser)]
@@ -49,12 +45,13 @@ fn main() {
     set_sb(img_file);
     let root = inode::mkfs_load_inode(Path::new(&args.src_path), None).unwrap();
     get_mut_sb().set_root(root);
-    let root = get_mut_sb().get_root();
+    let root = get_sb().get_root();
+    root.borrow().print_recursive(0);
 
     inode::mkfs_calc_inode_off(root);
+    sb::mkfs_balloc_super_block();
+    inode::mkfs_balloc_inode(root);
 
-    get_mut_sb().set_start_off(round_up(get_sb().get_start_off(), CODEXFS_BLKSIZ as _));
-    inode::mkfs_dump_inode_tree(root).unwrap();
-    root.borrow().print_recursive(0);
     sb::mkfs_dump_super_block().unwrap();
+    inode::mkfs_dump_inode(root).unwrap();
 }
