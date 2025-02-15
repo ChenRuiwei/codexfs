@@ -2,12 +2,7 @@
 // FIXME: dirent offset is not calculated yet
 #![allow(static_mut_refs)]
 
-use std::{
-    cell::{OnceCell, RefCell},
-    fs::File,
-    path::Path,
-    rc::Rc,
-};
+use std::{cell::OnceCell, fs::File, path::Path};
 
 use clap::Parser;
 use codexfs_core::{

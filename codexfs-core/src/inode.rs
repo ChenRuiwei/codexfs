@@ -30,7 +30,7 @@ fn get_inode(ino: ino_t) -> Option<&'static Rc<RefCell<Inode>>> {
 }
 
 fn get_inode_by_path(path: &Path) -> Option<&'static Rc<RefCell<Inode>>> {
-    let ino = path.metadata().unwrap().ino();
+    let ino = path.symlink_metadata().unwrap().ino();
     get_inode(ino)
 }
 
@@ -66,7 +66,8 @@ pub struct Dentry {
 
 impl Inode {
     fn new(path: &Path) -> Self {
-        let metadata = path.metadata().unwrap();
+        let metadata = path.symlink_metadata().unwrap();
+        println!("{}, size {}", path.display(), metadata.len());
         Self {
             path: Some(path.into()),
             file_type: metadata.file_type().into(),
@@ -84,7 +85,7 @@ impl Inode {
     }
 
     fn new_dir(path: &Path) -> Self {
-        let metadata = path.metadata().unwrap();
+        let metadata = path.symlink_metadata().unwrap();
         let file_type: CodexFsFileType = metadata.file_type().into();
         assert!(file_type.is_dir());
         println!("{}, size {}", path.display(), metadata.len());
@@ -181,7 +182,7 @@ impl Inode {
 
 impl Dentry {
     fn new(path: &Path, node: Rc<RefCell<Inode>>) -> Self {
-        let metadata = path.metadata().unwrap();
+        let metadata = path.symlink_metadata().unwrap();
         Dentry {
             path: Some(path.into()),
             file_name: path.file_name().unwrap().to_string_lossy().to_string(),
@@ -249,13 +250,17 @@ pub fn mkfs_load_inode(
     path: &Path,
     parent: Option<Weak<RefCell<Inode>>>,
 ) -> Result<Rc<RefCell<Inode>>> {
-    let metadata = path.metadata()?;
+    println!("aaaa {}", path.display());
+    let metadata = path.symlink_metadata()?;
     let ino = metadata.ino();
-    let file_type: CodexFsFileType = metadata.file_type().into();
 
+    println!("is symlink {:?}", metadata.file_type().is_symlink());
+    let file_type = metadata.file_type().into();
+
+    println!("file type {:?}", file_type);
     let inode = match file_type {
         CodexFsFileType::Unknown => panic!(),
-        CodexFsFileType::File => {
+        CodexFsFileType::File | CodexFsFileType::Symlink => {
             let inode = get_inode(ino).cloned().unwrap_or_else(|| {
                 let child = Inode::new(path);
                 Rc::new(RefCell::new(child))
@@ -277,7 +282,6 @@ pub fn mkfs_load_inode(
         CodexFsFileType::BlockDevice => todo!(),
         CodexFsFileType::Fifo => todo!(),
         CodexFsFileType::Socket => todo!(),
-        CodexFsFileType::Symlink => todo!(),
     };
 
     insert_inode(ino, inode.clone());
@@ -292,7 +296,7 @@ pub fn mkfs_calc_inode_off(root: &Rc<RefCell<Inode>>) {
             mkfs_calc_inode_off(child);
         } else {
             let mut child = child.borrow_mut();
-            assert!(child.file_type.is_file());
+            assert!(child.file_type.is_file() | child.file_type.is_symlink());
             let start_off = get_sb().get_start_off();
             if child.cf_blkpos.is_none() {
                 child.cf_blkpos = Some(start_off);
@@ -303,7 +307,7 @@ pub fn mkfs_calc_inode_off(root: &Rc<RefCell<Inode>>) {
 }
 
 // FIXME: dirent off should be calculated
-pub fn mkfs_dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
+pub fn mkfs_dump_inode_tree(node: &Rc<RefCell<Inode>>) -> Result<()> {
     let sb = get_mut_sb();
     let file_type = node.borrow().file_type;
 
@@ -364,7 +368,25 @@ pub fn mkfs_dump_inode_tree(node: &Rc<RefCell<Inode>>) -> io::Result<()> {
         CodexFsFileType::BlockDevice => todo!(),
         CodexFsFileType::Fifo => todo!(),
         CodexFsFileType::Socket => todo!(),
-        CodexFsFileType::Symlink => todo!(),
+        CodexFsFileType::Symlink => {
+            {
+                let node_ref = node.borrow();
+                let link = fs::read_link(node_ref.path())?;
+                sb.img_file.write_all_at(
+                    link.to_str().unwrap().as_bytes(),
+                    node_ref.cf_blkpos.unwrap(),
+                )?;
+
+                let codexfs_inode = CodexFsInode::from(&node_ref);
+                sb.img_file
+                    .write_all_at(bytes_of(&codexfs_inode), sb.get_start_off())?;
+            }
+            {
+                let mut node_mut = node.borrow_mut();
+                node_mut.cf_nid = codexfs_nid(sb.get_start_off());
+                sb.inc_start_off(size_of::<CodexFsInode>() as u64);
+            }
+        }
     }
 
     Ok(())
