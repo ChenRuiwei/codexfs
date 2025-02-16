@@ -1,11 +1,16 @@
 use std::{
+    cell::{Ref, RefCell},
     ffi::OsStr,
+    os::unix::fs::FileExt,
+    rc::Rc,
     time::{Duration, SystemTime},
 };
 
 use codexfs_core::{
-    inode::load_inode, sb::get_sb, utils::round_up, CodexFsFileType, CODEXFS_BLKSIZ,
-    CODEXFS_BLKSIZ_BITS,
+    inode::{get_inode, load_inode, Inode},
+    sb::get_sb,
+    utils::round_up,
+    CodexFsFileType, CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS,
 };
 use fuser::{FileAttr, FileType, Filesystem, Request, FUSE_ROOT_ID};
 use log::{debug, info, warn};
@@ -37,6 +42,26 @@ fn codexfsfuse_filetype_cast(file_type: CodexFsFileType) -> fuser::FileType {
     }
 }
 
+fn codexfsfuse_inode_attr(inode: &Ref<Inode>) -> FileAttr {
+    FileAttr {
+        ino: codexfsfuse_to_ino(inode.cf_ino),
+        size: inode.cf_size,
+        blocks: round_up(inode.cf_size, CODEXFS_BLKSIZ as _) >> CODEXFS_BLKSIZ_BITS,
+        atime: SystemTime::now(),
+        mtime: SystemTime::now(),
+        ctime: SystemTime::now(),
+        crtime: SystemTime::now(),
+        kind: codexfsfuse_filetype_cast(inode.file_type),
+        perm: inode.cf_mode as _,
+        nlink: inode.cf_nlink as _,
+        uid: inode.cf_uid,
+        gid: inode.cf_gid,
+        rdev: 0,
+        blksize: 0,
+        flags: 0,
+    }
+}
+
 pub struct CodexFs;
 
 impl Filesystem for CodexFs {
@@ -52,11 +77,19 @@ impl Filesystem for CodexFs {
     fn destroy(&mut self) {}
 
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEntry) {
-        warn!(
-            "[Not Implemented] lookup(parent: {:#x?}, name {:?})",
-            parent, name
-        );
-        reply.error(libc::ENOSYS);
+        info!("lookup(parent: {:#x?}, name {:?})", parent, name);
+
+        let parent = get_inode(codexfsfuse_to_nid(parent)).unwrap();
+        for dentry in parent.borrow().dentries.iter() {
+            if dentry.file_name() == name {
+                reply.entry(
+                    &Duration::new(0, 0),
+                    &codexfsfuse_inode_attr(&dentry.inode.borrow()),
+                    0,
+                );
+                return;
+            }
+        }
     }
 
     fn forget(&mut self, _req: &Request<'_>, _ino: u64, _nlookup: u64) {}
@@ -65,26 +98,7 @@ impl Filesystem for CodexFs {
         info!("getattr(ino: {:#x?}, fh: {:#x?})", ino, fh);
         let inode = load_inode(codexfsfuse_to_nid(ino)).unwrap();
         let inode = inode.borrow();
-        reply.attr(
-            &Duration::new(0, 0),
-            &FileAttr {
-                ino,
-                size: inode.cf_size,
-                blocks: round_up(inode.cf_size, CODEXFS_BLKSIZ as _) >> CODEXFS_BLKSIZ_BITS,
-                atime: SystemTime::now(),
-                mtime: SystemTime::now(),
-                ctime: SystemTime::now(),
-                crtime: SystemTime::now(),
-                kind: codexfsfuse_filetype_cast(inode.file_type),
-                perm: inode.cf_mode as _,
-                nlink: inode.cf_nlink as _,
-                uid: inode.cf_uid,
-                gid: inode.cf_gid,
-                rdev: 0,
-                blksize: 0,
-                flags: 0,
-            },
-        );
+        reply.attr(&Duration::new(0, 0), &codexfsfuse_inode_attr(&inode));
     }
 
     fn setattr(
@@ -114,8 +128,15 @@ impl Filesystem for CodexFs {
     }
 
     fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: fuser::ReplyData) {
-        debug!("[Not Implemented] readlink(ino: {:#x?})", ino);
-        reply.error(libc::ENOSYS);
+        info!("readlink(ino: {:#x?})", ino);
+        let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
+
+        let mut buf = vec![0; inode.borrow().cf_size as usize];
+        get_sb()
+            .img_file
+            .read_exact_at(&mut buf, (inode.borrow().cf_nid + 1) << CODEXFS_ISLOT_BITS)
+            .unwrap();
+        reply.data(&buf);
     }
 
     fn mknod(
@@ -231,12 +252,20 @@ impl Filesystem for CodexFs {
         lock_owner: Option<u64>,
         reply: fuser::ReplyData,
     ) {
-        warn!(
-            "[Not Implemented] read(ino: {:#x?}, fh: {}, offset: {}, size: {}, \
+        info!(
+            "read(ino: {:#x?}, fh: {}, offset: {}, size: {}, \
             flags: {:#x?}, lock_owner: {:?})",
             ino, fh, offset, size, flags, lock_owner
         );
-        reply.error(libc::ENOSYS);
+        assert!(offset >= 0);
+
+        let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
+        let mut buf = vec![0; inode.borrow().cf_size as usize];
+        get_sb()
+            .img_file
+            .read_exact_at(&mut buf, inode.borrow().cf_blkpos.unwrap())
+            .unwrap();
+        reply.data(&buf);
     }
 
     fn write(
@@ -318,13 +347,30 @@ impl Filesystem for CodexFs {
         ino: u64,
         fh: u64,
         offset: i64,
-        reply: fuser::ReplyDirectory,
+        mut reply: fuser::ReplyDirectory,
     ) {
-        warn!(
-            "[Not Implemented] readdir(ino: {:#x?}, fh: {}, offset: {})",
-            ino, fh, offset
-        );
-        reply.error(libc::ENOSYS);
+        info!("readdir(ino: {:#x?}, fh: {}, offset: {})", ino, fh, offset);
+
+        let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
+        for (index, dentry) in inode
+            .borrow()
+            .dentries
+            .iter()
+            .skip(offset as usize)
+            .enumerate()
+        {
+            let buffer_full = reply.add(
+                codexfsfuse_to_ino(dentry.inode.borrow().cf_nid),
+                offset + index as i64 + 1,
+                codexfsfuse_filetype_cast(dentry.file_type),
+                dentry.file_name(),
+            );
+            if buffer_full {
+                break;
+            }
+        }
+
+        reply.ok();
     }
 
     fn readdirplus(

@@ -29,7 +29,7 @@ fn get_mut_inode_table() -> &'static mut InodeTable {
     unsafe { FILE_NODE_TABLE.get_mut_or_init(HashMap::new) }
 }
 
-fn get_inode(ino: ino_t) -> Option<&'static Rc<RefCell<Inode>>> {
+pub fn get_inode(ino: ino_t) -> Option<&'static Rc<RefCell<Inode>>> {
     get_mut_inode_table().get(&ino)
 }
 
@@ -199,7 +199,7 @@ impl Dentry {
         }
     }
 
-    fn file_name(&self) -> &str {
+    pub fn file_name(&self) -> &str {
         &self.file_name
     }
 }
@@ -450,7 +450,7 @@ pub fn mkfs_dump_inode(node: &Rc<RefCell<Inode>>) -> Result<()> {
             let link = fs::read_link(node_ref.path())?;
             sb.img_file.write_all_at(
                 link.to_string_lossy().as_bytes(),
-                node_ref.cf_nid << CODEXFS_ISLOT_BITS,
+                (node_ref.cf_nid + 1) << CODEXFS_ISLOT_BITS,
             )?;
             mkfs_dump_codexfs_inode(node)?;
         }
@@ -573,6 +573,8 @@ pub fn load_inode(nid: u64) -> Result<Rc<RefCell<Inode>>> {
             Rc::new(RefCell::new(inode))
         }
     };
+
+    insert_inode(inode.borrow().cf_ino, inode.clone());
     Ok(inode)
 }
 
