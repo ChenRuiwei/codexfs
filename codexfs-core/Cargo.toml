@@ -10,3 +10,4 @@ num-traits = { workspace = true }
 bytemuck = { workspace = true }
 libc = { workspace = true }
 anyhow = { workspace = true }
+xz2 = { workspace = true }
