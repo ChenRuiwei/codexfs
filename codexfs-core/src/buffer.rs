@@ -76,15 +76,15 @@ impl BufferManager {
             return pos;
         }
 
-        self.balloc_contig(size, alignment)
+        self.balloc_contig(aligned_size, alignment)
     }
 
-    fn bfind(&mut self, size: u64, alignment: u16) -> Option<u64> {
-        assert_eq!(size, round_up(size, alignment as _));
-        if size > CODEXFS_BLKSIZ as _ {
+    fn bfind(&mut self, aligned_size: u64, alignment: u16) -> Option<u64> {
+        assert_eq!(aligned_size, round_up(aligned_size, alignment as _));
+        if aligned_size > CODEXFS_BLKSIZ as _ {
             return None;
         }
-        let size = size as u16;
+        let size = aligned_size as u16;
         for i in size..CODEXFS_BLKSIZ + 1 {
             let i = i as usize;
             if self.table[i].is_empty() {
@@ -99,19 +99,19 @@ impl BufferManager {
         None
     }
 
-    fn balloc_contig(&mut self, size: u64, alignment: u16) -> u64 {
-        assert_eq!(size, round_up(size, alignment as _));
+    fn balloc_contig(&mut self, aligned_size: u64, alignment: u16) -> u64 {
+        assert_eq!(aligned_size, round_up(aligned_size, alignment as _));
         let aligned_off = round_up(self.tail_blk.borrow().off, alignment);
         let (pos, mut size_left) = match aligned_off.cmp(&CODEXFS_BLKSIZ) {
             Ordering::Less => {
-                assert!((aligned_off as u64 + size) > CODEXFS_BLKSIZ as u64);
+                assert!((aligned_off as u64 + aligned_size) > CODEXFS_BLKSIZ as u64);
                 let pos = self.tail_blk.borrow().pos();
-                let size_left = size - ((CODEXFS_BLKSIZ - aligned_off) as u64);
+                let size_left = aligned_size - ((CODEXFS_BLKSIZ - aligned_off) as u64);
                 (pos, size_left)
             }
             Ordering::Equal => {
                 let pos = (self.tail_blk_id() + 1) << CODEXFS_BLKSIZ_BITS;
-                let size_left = size;
+                let size_left = aligned_size;
                 (pos, size_left)
             }
             Ordering::Greater => panic!(),
