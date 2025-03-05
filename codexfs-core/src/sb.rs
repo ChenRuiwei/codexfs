@@ -97,7 +97,9 @@ pub fn fuse_load_super_block() -> Result<()> {
     let magic = codexfs_sb.magic;
     assert_eq!(magic, CODEXFS_MAGIC);
     let sb = get_mut_sb();
-    sb.set_root(Rc::new(RefCell::new(Inode::from_nid(codexfs_sb.root_nid)?)));
+    sb.set_root(Rc::new(RefCell::new(Inode::load_from_nid(
+        codexfs_sb.root_nid,
+    )?)));
     Ok(())
 }
 

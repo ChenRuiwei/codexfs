@@ -2,7 +2,7 @@ use std::{
     cell::{OnceCell, Ref, RefCell},
     collections::HashMap,
     fs::{self, File},
-    io::{self, Read},
+    io::Read,
     ops::{Deref, DerefMut},
     os::unix::fs::{FileExt, FileTypeExt, MetadataExt},
     path::{Path, PathBuf},
@@ -15,7 +15,13 @@ use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 use log::info;
 
 use crate::{
-    buffer::{get_mut_bufmgr, BufferType}, codexfs_nid, gid_t, ino_t, mode_t, sb::{get_mut_sb, get_sb}, uid_t, utils::is_dot_or_dotdot, CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS
+    CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType, CodexFsInode,
+    CodexFsInodeFormat,
+    buffer::{BufferType, get_mut_bufmgr},
+    codexfs_nid, gid_t, ino_t, mode_t,
+    sb::{get_mut_sb, get_sb},
+    uid_t,
+    utils::is_dot_or_dotdot,
 };
 
 type InodeTable = HashMap<ino_t, Rc<RefCell<Inode>>>;
@@ -58,12 +64,12 @@ pub enum FileType {
     Symlink,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FileData {
     pub cf_blkpos: Option<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DirData {
     pub parent: Option<Weak<RefCell<Inode>>>, // root points to itself
     pub dentries: Vec<Dentry>,
@@ -102,12 +108,9 @@ impl FileType {
 impl From<std::fs::FileType> for FileType {
     fn from(val: std::fs::FileType) -> Self {
         if val.is_dir() {
-            FileType::Dir(DirData {
-                parent: None,
-                dentries: Vec::new(),
-            })
+            FileType::Dir(DirData::default())
         } else if val.is_file() {
-            FileType::File(FileData { cf_blkpos: None })
+            FileType::File(FileData::default())
         } else if val.is_char_device() {
             FileType::CharDevice
         } else if val.is_block_device() {
@@ -134,10 +137,7 @@ impl From<&CodexFsInode> for FileType {
                     None
                 },
             }),
-            S_IFDIR => FileType::Dir(DirData {
-                parent: None,
-                dentries: Vec::new(),
-            }),
+            S_IFDIR => FileType::Dir(DirData::default()),
             S_IFCHR => FileType::CharDevice,
             S_IFBLK => FileType::BlockDevice,
             S_IFSOCK => FileType::Socket,
@@ -160,7 +160,6 @@ impl From<&FileType> for CodexFsFileType {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub struct Inode {
@@ -209,7 +208,7 @@ impl Inode {
         }
     }
 
-    pub fn from_nid(nid: u64) -> Result<Self> {
+    pub fn load_from_nid(nid: u64) -> Result<Self> {
         let mut inode_buf = [0; size_of::<CodexFsInode>()];
         get_sb()
             .img_file
@@ -292,7 +291,6 @@ impl Inode {
     }
 
     fn set_size(&mut self, size: u64) {
-        // assert_eq!(self.cf_size, 0);
         self.common.cf_size = size
     }
 
@@ -351,7 +349,7 @@ impl From<&Dentry> for CodexFsDirent {
         Self {
             nid: dentry.inode.borrow().common.cf_nid,
             nameoff: 0,
-            file_type: dentry.file_type.into(),
+            file_type: dentry.file_type,
             reserved: 0,
         }
     }
@@ -491,7 +489,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
         let guard = inode.borrow();
         let (common, file_type) = guard.deref().split_borrow();
         match file_type {
-            FileType::File { .. } => {
+            FileType::File(_) => {
                 drop(guard);
                 inode.borrow_mut().inc_blkpos(data_start_offset);
                 let mut file = File::open(inode.borrow().path())?;
@@ -501,10 +499,10 @@ pub fn mkfs_dump_inode() -> Result<()> {
                     .write_all_at(&content, inode.borrow().get_file_data().cf_blkpos.unwrap())?;
                 mkfs_dump_codexfs_inode(inode)?;
             }
-            FileType::Dir(data) => {
+            FileType::Dir(dir) => {
                 let mut dirents = Vec::new();
                 let mut names = Vec::new();
-                let mut nameoff = (size_of::<CodexFsDirent>() * (data.dentries.len() + 2)) as u16;
+                let mut nameoff = (size_of::<CodexFsDirent>() * (dir.dentries.len() + 2)) as u16;
 
                 let dot_dirent = CodexFsDirent {
                     nid: common.cf_nid,
@@ -526,7 +524,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 names.push("..");
                 nameoff += 2;
 
-                for dentry in data.dentries.iter() {
+                for dentry in dir.dentries.iter() {
                     let mut codexfs_dirent = CodexFsDirent::from(dentry);
                     codexfs_dirent.nameoff = nameoff;
                     dirents.push(codexfs_dirent);
@@ -570,19 +568,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
 }
 
 pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<RefCell<Inode>>> {
-    let mut inode = Inode {
-        common: InodeCommon {
-            path: None,
-            cf_size: codexfs_inode.size,
-            cf_ino: codexfs_inode.ino,
-            cf_uid: codexfs_inode.uid,
-            cf_gid: codexfs_inode.gid,
-            cf_mode: codexfs_inode.mode,
-            cf_nid: nid,
-            cf_nlink: codexfs_inode.nlink,
-        },
-        file_type: codexfs_inode.into(),
-    };
+    let mut inode = Inode::from_codexfs_inode(codexfs_inode, nid);
     let dirents_start = (nid + 1) << CODEXFS_ISLOT_BITS;
     let mut dirent_buf = [0; size_of::<CodexFsDirent>()];
     get_sb()
@@ -623,7 +609,7 @@ pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<
         let child_dentry = Dentry {
             path: None,
             file_name,
-            file_type: dirents[i as usize].file_type.into(),
+            file_type: dirents[i as usize].file_type,
             inode: child_inode,
         };
         inode.add_dentry(child_dentry);
