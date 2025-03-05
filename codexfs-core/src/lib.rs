@@ -170,10 +170,10 @@ impl From<mode_t> for CodexFsFileType {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
 pub struct CodexFsDirent {
-    pub nid: u64,                         // node number
-    pub nameoff: u16,                     // start offset of file name
+    pub nid: u64,                   // node number
+    pub nameoff: u16,               // start offset of file name
     pub file_type: CodexFsFileType, // file type
-    pub reserved: u8,                     // reserved
+    pub reserved: u8,               // reserved
 }
 
 #[cfg(test)]

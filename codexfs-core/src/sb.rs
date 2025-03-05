@@ -10,7 +10,7 @@ use bytemuck::{bytes_of, from_bytes};
 
 use crate::{
     CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
-    buffer::{BufferType, get_mut_bufmgr},
+    buffer::{BufferType, get_bufmgr_mut},
     ino_t,
     inode::Inode,
 };
@@ -84,7 +84,7 @@ pub fn get_sb() -> &'static SuperBlock {
     unsafe { SUPER_BLOCK.get().unwrap() }
 }
 
-pub fn get_mut_sb() -> &'static mut SuperBlock {
+pub fn get_sb_mut() -> &'static mut SuperBlock {
     unsafe { SUPER_BLOCK.get_mut().unwrap() }
 }
 
@@ -96,7 +96,7 @@ pub fn fuse_load_super_block() -> Result<()> {
     let codexfs_sb: &CodexFsSuperBlock = from_bytes(&sb_buf);
     let magic = codexfs_sb.magic;
     assert_eq!(magic, CODEXFS_MAGIC);
-    let sb = get_mut_sb();
+    let sb = get_sb_mut();
     sb.set_root(Rc::new(RefCell::new(Inode::load_from_nid(
         codexfs_sb.root_nid,
     )?)));
@@ -104,7 +104,7 @@ pub fn fuse_load_super_block() -> Result<()> {
 }
 
 pub fn mkfs_balloc_super_block() {
-    let pos = get_mut_bufmgr().balloc(size_of::<CodexFsSuperBlock>() as _, BufferType::Meta);
+    let pos = get_bufmgr_mut().balloc(size_of::<CodexFsSuperBlock>() as _, BufferType::Meta);
     assert_eq!(pos, CODEXFS_SUPERBLK_OFF);
 }
 

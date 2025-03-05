@@ -17,22 +17,22 @@ use log::info;
 use crate::{
     CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType, CodexFsInode,
     CodexFsInodeFormat,
-    buffer::{BufferType, get_mut_bufmgr},
+    buffer::{BufferType, get_bufmgr_mut},
     codexfs_nid, gid_t, ino_t, mode_t,
-    sb::{get_mut_sb, get_sb},
+    sb::{get_sb, get_sb_mut},
     uid_t,
     utils::is_dot_or_dotdot,
 };
 
 type InodeTable = HashMap<ino_t, Rc<RefCell<Inode>>>;
 
-fn get_mut_inode_table() -> &'static mut InodeTable {
+fn get_inode_table_mut() -> &'static mut InodeTable {
     static mut FILE_NODE_TABLE: OnceCell<InodeTable> = OnceCell::new();
     unsafe { FILE_NODE_TABLE.get_mut_or_init(HashMap::new) }
 }
 
 pub fn get_inode(ino: ino_t) -> Option<&'static Rc<RefCell<Inode>>> {
-    get_mut_inode_table().get(&ino)
+    get_inode_table_mut().get(&ino)
 }
 
 fn get_inode_by_path(path: &Path) -> Option<&'static Rc<RefCell<Inode>>> {
@@ -41,14 +41,14 @@ fn get_inode_by_path(path: &Path) -> Option<&'static Rc<RefCell<Inode>>> {
 }
 
 fn insert_inode(ino: ino_t, inode: Rc<RefCell<Inode>>) {
-    get_mut_inode_table().insert(ino, inode);
+    get_inode_table_mut().insert(ino, inode);
 }
 
 pub struct InodeVec {
     pub inodes: Vec<Rc<RefCell<Inode>>>,
 }
 
-pub fn get_mut_inode_vec() -> &'static mut InodeVec {
+pub fn get_inode_vec_mut() -> &'static mut InodeVec {
     static mut INODE_VEC: OnceCell<InodeVec> = OnceCell::new();
     unsafe { INODE_VEC.get_mut_or_init(|| InodeVec { inodes: Vec::new() }) }
 }
@@ -198,7 +198,7 @@ impl Inode {
                 path: Some(path.into()),
                 cf_size: metadata.len(),
                 cf_nlink: if metadata.is_dir() { 2 } else { 0 },
-                cf_ino: get_mut_sb().get_ino_and_inc(),
+                cf_ino: get_sb_mut().get_ino_and_inc(),
                 cf_gid: metadata.gid(),
                 cf_uid: metadata.uid(),
                 cf_nid: 0,
@@ -415,15 +415,15 @@ pub fn mkfs_load_inode(
     };
 
     insert_inode(ino, inode.clone());
-    get_mut_inode_vec().inodes.push(inode.clone());
+    get_inode_vec_mut().inodes.push(inode.clone());
 
     Ok(inode)
 }
 
 pub fn mkfs_balloc_inode() {
-    let buf_mgr = get_mut_bufmgr();
+    let buf_mgr = get_bufmgr_mut();
 
-    for inode in get_mut_inode_vec().inodes.iter() {
+    for inode in get_inode_vec_mut().inodes.iter() {
         let mut guard = inode.borrow_mut();
         let (common, file_type) = guard.deref_mut().split_borrow_mut();
         match &file_type {
@@ -454,7 +454,7 @@ pub fn mkfs_balloc_inode() {
 }
 
 pub fn mkfs_calc_inode_off() {
-    for inode in get_mut_inode_vec().inodes.iter() {
+    for inode in get_inode_vec_mut().inodes.iter() {
         let mut guard = inode.borrow_mut();
         let (common, file_type) = guard.deref_mut().split_borrow_mut();
         if let FileType::File(data) = file_type {
@@ -462,7 +462,7 @@ pub fn mkfs_calc_inode_off() {
             if data.cf_blkpos.is_none() {
                 data.cf_blkpos = Some(start_off);
             }
-            get_mut_sb().set_start_off(start_off + common.cf_size);
+            get_sb_mut().set_start_off(start_off + common.cf_size);
         }
     }
 }
@@ -484,8 +484,8 @@ fn mkfs_dump_codexfs_inode(inode: &Rc<RefCell<Inode>>) -> Result<()> {
 
 pub fn mkfs_dump_inode() -> Result<()> {
     let sb = get_sb();
-    let data_start_offset = (get_mut_bufmgr().tail_blk_id() + 1) << CODEXFS_BLKSIZ_BITS;
-    for inode in get_mut_inode_vec().inodes.iter() {
+    let data_start_offset = (get_bufmgr_mut().tail_blk_id() + 1) << CODEXFS_BLKSIZ_BITS;
+    for inode in get_inode_vec_mut().inodes.iter() {
         let guard = inode.borrow();
         let (common, file_type) = guard.deref().split_borrow();
         match file_type {

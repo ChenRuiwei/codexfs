@@ -22,7 +22,7 @@ pub fn get_alignment(btype: BufferType) -> u16 {
     }
 }
 
-pub fn get_mut_bufmgr() -> &'static mut BufferManager {
+pub fn get_bufmgr_mut() -> &'static mut BufferManager {
     static mut BUFFER_MANAGER: OnceCell<BufferManager> = OnceCell::new();
     unsafe { BUFFER_MANAGER.get_mut_or_init(BufferManager::new) }
 }

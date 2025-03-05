@@ -5,7 +5,7 @@ use std::{cell::OnceCell, fs::File, path::Path};
 use clap::Parser;
 use codexfs_core::{
     inode,
-    sb::{self, get_mut_sb, get_sb, set_sb},
+    sb::{self, get_sb, get_sb_mut, set_sb},
 };
 
 #[derive(Debug, Parser)]
@@ -44,12 +44,12 @@ fn main() {
     let img_file = File::create(&args.img_path).unwrap();
     set_sb(img_file);
     let root = inode::mkfs_load_inode(Path::new(&args.src_path), None).unwrap();
-    get_mut_sb().set_root(root);
+    get_sb_mut().set_root(root);
 
     inode::mkfs_calc_inode_off();
     sb::mkfs_balloc_super_block();
     inode::mkfs_balloc_inode();
-    inode::get_mut_inode_vec()
+    inode::get_inode_vec_mut()
         .inodes
         .iter()
         .for_each(|i| println!("{:?}", i.borrow().common.path));
