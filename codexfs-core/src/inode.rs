@@ -66,7 +66,7 @@ pub enum FileType {
 
 #[derive(Debug, Default)]
 pub struct FileData {
-    pub cf_blkpos: Option<u64>,
+    pub blkpos: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -131,7 +131,7 @@ impl From<&CodexFsInode> for FileType {
     fn from(codexfs_inode: &CodexFsInode) -> Self {
         match codexfs_inode.mode & S_IFMT {
             S_IFREG => FileType::File(FileData {
-                cf_blkpos: if codexfs_inode.blkpos != 0 {
+                blkpos: if codexfs_inode.blkpos != 0 {
                     Some(codexfs_inode.blkpos)
                 } else {
                     None
@@ -171,14 +171,13 @@ pub struct Inode {
 pub struct InodeCommon {
     pub path: Option<PathBuf>,
 
-    // Fields prefixed with "cf" (for codexfs) are unrelated to the original file system.
-    pub cf_size: u64,
-    pub cf_ino: ino_t,
-    pub cf_uid: uid_t,
-    pub cf_gid: gid_t,
-    pub cf_mode: mode_t,
-    pub cf_nid: u64,
-    pub cf_nlink: u16, // for dir: subdir number + 2; for file: hardlink number
+    pub size: u64,
+    pub ino: ino_t,
+    pub uid: uid_t,
+    pub gid: gid_t,
+    pub mode: mode_t,
+    pub nid: u64,
+    pub nlink: u16, // for dir: subdir number + 2; for file: hardlink number
 }
 
 #[derive(Debug)]
@@ -196,13 +195,13 @@ impl Inode {
         Self {
             common: InodeCommon {
                 path: Some(path.into()),
-                cf_size: metadata.len(),
-                cf_nlink: if metadata.is_dir() { 2 } else { 0 },
-                cf_ino: get_sb_mut().get_ino_and_inc(),
-                cf_gid: metadata.gid(),
-                cf_uid: metadata.uid(),
-                cf_nid: 0,
-                cf_mode: metadata.mode(),
+                size: metadata.len(),
+                nlink: if metadata.is_dir() { 2 } else { 0 },
+                ino: get_sb_mut().get_ino_and_inc(),
+                gid: metadata.gid(),
+                uid: metadata.uid(),
+                nid: 0,
+                mode: metadata.mode(),
             },
             file_type: metadata.file_type().into(),
         }
@@ -221,13 +220,13 @@ impl Inode {
         Self {
             common: InodeCommon {
                 path: None,
-                cf_size: codexfs_inode.size,
-                cf_ino: codexfs_inode.ino,
-                cf_uid: codexfs_inode.uid,
-                cf_gid: codexfs_inode.gid,
-                cf_mode: codexfs_inode.mode,
-                cf_nid: nid,
-                cf_nlink: codexfs_inode.nlink,
+                size: codexfs_inode.size,
+                ino: codexfs_inode.ino,
+                uid: codexfs_inode.uid,
+                gid: codexfs_inode.gid,
+                mode: codexfs_inode.mode,
+                nid,
+                nlink: codexfs_inode.nlink,
             },
             file_type: FileType::from(codexfs_inode),
         }
@@ -291,16 +290,15 @@ impl Inode {
     }
 
     fn set_size(&mut self, size: u64) {
-        self.common.cf_size = size
+        self.common.size = size
     }
 
     fn inc_nlink(&mut self) {
-        self.common.cf_nlink += 1
+        self.common.nlink += 1
     }
 
     fn inc_blkpos(&mut self, start_off: u64) {
-        self.get_file_data_mut().cf_blkpos =
-            Some(self.get_file_data().cf_blkpos.unwrap() + start_off)
+        self.get_file_data_mut().blkpos = Some(self.get_file_data().blkpos.unwrap() + start_off)
     }
 
     fn add_dentry(&mut self, dentry: Dentry) {
@@ -327,18 +325,18 @@ impl Dentry {
 impl From<&Ref<'_, Inode>> for CodexFsInode {
     fn from(inode: &Ref<'_, Inode>) -> Self {
         let blkpos = match &inode.file_type {
-            FileType::File(data) => data.cf_blkpos.unwrap_or(0),
+            FileType::File(data) => data.blkpos.unwrap_or(0),
             _ => 0,
         };
         Self {
             format: CodexFsInodeFormat::CODEXFS_INODE_FLAT_PLAIN,
-            mode: inode.common.cf_mode,
-            nlink: inode.common.cf_nlink,
-            size: inode.common.cf_size,
+            mode: inode.common.mode,
+            nlink: inode.common.nlink,
+            size: inode.common.size,
             blkpos,
-            ino: inode.common.cf_nid,
-            uid: inode.common.cf_uid,
-            gid: inode.common.cf_gid,
+            ino: inode.common.nid,
+            uid: inode.common.uid,
+            gid: inode.common.gid,
             reserved: [0; _],
         }
     }
@@ -347,7 +345,7 @@ impl From<&Ref<'_, Inode>> for CodexFsInode {
 impl From<&Dentry> for CodexFsDirent {
     fn from(dentry: &Dentry) -> Self {
         Self {
-            nid: dentry.inode.borrow().common.cf_nid,
+            nid: dentry.inode.borrow().common.nid,
             nameoff: 0,
             file_type: dentry.file_type,
             reserved: 0,
@@ -429,14 +427,14 @@ pub fn mkfs_balloc_inode() {
         match &file_type {
             FileType::File { .. } => {
                 let pos = buf_mgr.balloc(size_of::<CodexFsInode>() as _, BufferType::Inode);
-                common.cf_nid = codexfs_nid(pos);
+                common.nid = codexfs_nid(pos);
             }
             FileType::Dir { .. } => {
                 let pos = buf_mgr.balloc(
-                    (size_of::<CodexFsInode>() as u64) + common.cf_size,
+                    (size_of::<CodexFsInode>() as u64) + common.size,
                     BufferType::Inode,
                 );
-                common.cf_nid = codexfs_nid(pos);
+                common.nid = codexfs_nid(pos);
             }
             FileType::CharDevice => todo!(),
             FileType::BlockDevice => todo!(),
@@ -444,10 +442,10 @@ pub fn mkfs_balloc_inode() {
             FileType::Socket => todo!(),
             FileType::Symlink => {
                 let pos = buf_mgr.balloc(
-                    (size_of::<CodexFsInode>() as u64) + common.cf_size,
+                    (size_of::<CodexFsInode>() as u64) + common.size,
                     BufferType::Inode,
                 );
-                common.cf_nid = codexfs_nid(pos);
+                common.nid = codexfs_nid(pos);
             }
         }
     }
@@ -459,10 +457,10 @@ pub fn mkfs_calc_inode_off() {
         let (common, file_type) = guard.deref_mut().split_borrow_mut();
         if let FileType::File(data) = file_type {
             let start_off = get_sb().get_start_off();
-            if data.cf_blkpos.is_none() {
-                data.cf_blkpos = Some(start_off);
+            if data.blkpos.is_none() {
+                data.blkpos = Some(start_off);
             }
-            get_sb_mut().set_start_off(start_off + common.cf_size);
+            get_sb_mut().set_start_off(start_off + common.size);
         }
     }
 }
@@ -471,13 +469,13 @@ fn mkfs_dump_codexfs_inode(inode: &Rc<RefCell<Inode>>) -> Result<()> {
     log::info!(
         "path: {}, nid: {}",
         inode.borrow().path().display(),
-        inode.borrow().common.cf_nid
+        inode.borrow().common.nid
     );
     let inode_ref = inode.borrow();
     let codexfs_inode = CodexFsInode::from(&inode_ref);
     get_sb().img_file.write_all_at(
         bytes_of(&codexfs_inode),
-        inode_ref.common.cf_nid << CODEXFS_ISLOT_BITS,
+        inode_ref.common.nid << CODEXFS_ISLOT_BITS,
     )?;
     Ok(())
 }
@@ -496,7 +494,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 let mut content = Vec::new();
                 file.read_to_end(&mut content)?;
                 sb.img_file
-                    .write_all_at(&content, inode.borrow().get_file_data().cf_blkpos.unwrap())?;
+                    .write_all_at(&content, inode.borrow().get_file_data().blkpos.unwrap())?;
                 mkfs_dump_codexfs_inode(inode)?;
             }
             FileType::Dir(dir) => {
@@ -505,7 +503,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 let mut nameoff = (size_of::<CodexFsDirent>() * (dir.dentries.len() + 2)) as u16;
 
                 let dot_dirent = CodexFsDirent {
-                    nid: common.cf_nid,
+                    nid: common.nid,
                     nameoff,
                     file_type: file_type.into(),
                     reserved: 0,
@@ -515,7 +513,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 nameoff += 1;
 
                 let dotdot_dirent = CodexFsDirent {
-                    nid: guard.parent().borrow().common.cf_nid,
+                    nid: guard.parent().borrow().common.nid,
                     nameoff,
                     file_type: file_type.into(),
                     reserved: 0,
@@ -532,7 +530,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                     nameoff += u16::try_from(dentry.file_name().len())?;
                 }
 
-                let mut dirent_off = (common.cf_nid + 1) << CODEXFS_ISLOT_BITS;
+                let mut dirent_off = (common.nid + 1) << CODEXFS_ISLOT_BITS;
                 for dirent in dirents {
                     sb.img_file.write_all_at(bytes_of(&dirent), dirent_off)?;
                     dirent_off += size_of::<CodexFsDirent>() as u64;
@@ -543,7 +541,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                     name_off += name.len() as u64;
                 }
                 assert_eq!(
-                    ((common.cf_nid + 1) << CODEXFS_ISLOT_BITS) + common.cf_size,
+                    ((common.nid + 1) << CODEXFS_ISLOT_BITS) + common.size,
                     name_off
                 );
 
@@ -557,7 +555,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 let link = fs::read_link(guard.path())?;
                 sb.img_file.write_all_at(
                     link.to_string_lossy().as_bytes(),
-                    (common.cf_nid + 1) << CODEXFS_ISLOT_BITS,
+                    (common.nid + 1) << CODEXFS_ISLOT_BITS,
                 )?;
                 mkfs_dump_codexfs_inode(inode)?;
             }
@@ -592,7 +590,7 @@ pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<
             let endoff = if i != ndir - 1 {
                 dirents[(i + 1) as usize].nameoff
             } else {
-                inode.common.cf_size as _
+                inode.common.size as _
             };
             let startoff = dirents[(i) as usize].nameoff;
             let mut name_buf = vec![0; (endoff - startoff) as usize];
@@ -642,7 +640,7 @@ pub fn fuse_load_inode(nid: u64) -> Result<Rc<RefCell<Inode>>> {
         }
     };
 
-    insert_inode(inode.borrow().common.cf_ino, inode.clone());
+    insert_inode(inode.borrow().common.ino, inode.clone());
     Ok(inode)
 }
 
@@ -693,9 +691,9 @@ mod test {
             assert!(Rc::ptr_eq(&root_inode.borrow().parent(), &root_inode));
             assert!(Rc::ptr_eq(hello_inode, hardlink_inode));
 
-            assert_eq!(root_inode.borrow().common.cf_nlink, 3);
-            assert_eq!(subdir_inode.borrow().common.cf_nlink, 2);
-            assert_eq!(hello_inode.borrow().common.cf_nlink, 2);
+            assert_eq!(root_inode.borrow().common.nlink, 3);
+            assert_eq!(subdir_inode.borrow().common.nlink, 2);
+            assert_eq!(hello_inode.borrow().common.nlink, 2);
         }
 
         fs::remove_dir_all(root)?;
