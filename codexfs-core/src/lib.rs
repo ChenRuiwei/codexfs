@@ -7,7 +7,7 @@ pub mod inode;
 pub mod sb;
 pub mod utils;
 
-use std::{fs::FileType, os::unix::fs::FileTypeExt};
+use std::os::unix::fs::FileTypeExt;
 
 use anyhow::Result;
 use bitflags::bitflags;
@@ -86,7 +86,8 @@ pub struct CodexFsInode {
     pub reserved: [u8; 24], // reserved
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Zeroable)]
+#[repr(u8)]
 pub enum CodexFsFileType {
     Unknown,
     File,
@@ -97,6 +98,8 @@ pub enum CodexFsFileType {
     Socket,
     Symlink,
 }
+
+unsafe impl Pod for CodexFsFileType {}
 
 impl CodexFsFileType {
     pub const fn is_file(self) -> bool {
@@ -128,8 +131,8 @@ impl CodexFsFileType {
     }
 }
 
-impl From<FileType> for CodexFsFileType {
-    fn from(val: FileType) -> Self {
+impl From<std::fs::FileType> for CodexFsFileType {
+    fn from(val: std::fs::FileType) -> Self {
         if val.is_dir() {
             CodexFsFileType::Dir
         } else if val.is_file() {
@@ -164,64 +167,12 @@ impl From<mode_t> for CodexFsFileType {
     }
 }
 
-impl From<CodexFsDirentFileType> for CodexFsFileType {
-    fn from(val: CodexFsDirentFileType) -> Self {
-        let val = val.0;
-        if val == CODEXFS_FT_UNKNOWN {
-            CodexFsFileType::Unknown
-        } else if val == CODEXFS_FT_REG_FILE {
-            CodexFsFileType::File
-        } else if val == CODEXFS_FT_DIR {
-            CodexFsFileType::Dir
-        } else if val == CODEXFS_FT_CHRDEV {
-            CodexFsFileType::CharDevice
-        } else if val == CODEXFS_FT_BLKDEV {
-            CodexFsFileType::BlockDevice
-        } else if val == CODEXFS_FT_SOCK {
-            CodexFsFileType::Socket
-        } else if val == CODEXFS_FT_SYMLINK {
-            CodexFsFileType::Symlink
-        } else {
-            panic!("unknown file type");
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(transparent)]
-pub struct CodexFsDirentFileType(u8);
-
-const CODEXFS_FT_UNKNOWN: u8 = 0;
-const CODEXFS_FT_REG_FILE: u8 = 1;
-const CODEXFS_FT_DIR: u8 = 2;
-const CODEXFS_FT_CHRDEV: u8 = 3;
-const CODEXFS_FT_BLKDEV: u8 = 4;
-const CODEXFS_FT_FIFO: u8 = 5;
-const CODEXFS_FT_SOCK: u8 = 6;
-const CODEXFS_FT_SYMLINK: u8 = 7;
-const CODEXFS_FT_MAX: u8 = 8;
-
-impl From<CodexFsFileType> for CodexFsDirentFileType {
-    fn from(val: CodexFsFileType) -> Self {
-        Self(match val {
-            CodexFsFileType::Unknown => CODEXFS_FT_UNKNOWN,
-            CodexFsFileType::File => CODEXFS_FT_REG_FILE,
-            CodexFsFileType::Dir => CODEXFS_FT_DIR,
-            CodexFsFileType::CharDevice => CODEXFS_FT_CHRDEV,
-            CodexFsFileType::BlockDevice => CODEXFS_FT_BLKDEV,
-            CodexFsFileType::Fifo => CODEXFS_FT_FIFO,
-            CodexFsFileType::Socket => CODEXFS_FT_SOCK,
-            CodexFsFileType::Symlink => CODEXFS_FT_SYMLINK,
-        })
-    }
-}
-
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
 pub struct CodexFsDirent {
     pub nid: u64,                         // node number
     pub nameoff: u16,                     // start offset of file name
-    pub file_type: CodexFsDirentFileType, // file type
+    pub file_type: CodexFsFileType, // file type
     pub reserved: u8,                     // reserved
 }
 

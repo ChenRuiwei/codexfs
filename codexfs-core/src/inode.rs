@@ -1,5 +1,5 @@
 use std::{
-    cell::{OnceCell, Ref, RefCell, RefMut},
+    cell::{OnceCell, Ref, RefCell},
     collections::HashMap,
     fs::{self, File},
     io::{self, Read},
@@ -15,14 +15,7 @@ use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 use log::info;
 
 use crate::{
-    CODEXFS_BLKSIZ_BITS, CODEXFS_FT_BLKDEV, CODEXFS_FT_CHRDEV, CODEXFS_FT_DIR, CODEXFS_FT_FIFO,
-    CODEXFS_FT_REG_FILE, CODEXFS_FT_SOCK, CODEXFS_FT_SYMLINK, CODEXFS_ISLOT_BITS, CodexFsDirent,
-    CodexFsDirentFileType, CodexFsFileType, CodexFsInode, CodexFsInodeFormat,
-    buffer::{BufferType, get_mut_bufmgr},
-    codexfs_nid, gid_t, ino_t, mode_t,
-    sb::{get_mut_sb, get_sb},
-    uid_t,
-    utils::is_dot_or_dotdot,
+    buffer::{get_mut_bufmgr, BufferType}, codexfs_nid, gid_t, ino_t, mode_t, sb::{get_mut_sb, get_sb}, uid_t, utils::is_dot_or_dotdot, CodexFsDirent, CodexFsFileType, CodexFsInode, CodexFsInodeFormat, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS
 };
 
 type InodeTable = HashMap<ino_t, Rc<RefCell<Inode>>>;
@@ -154,19 +147,20 @@ impl From<&CodexFsInode> for FileType {
     }
 }
 
-impl From<&FileType> for CodexFsDirentFileType {
-    fn from(val: &FileType) -> Self {
-        Self(match val {
-            FileType::File { .. } => CODEXFS_FT_REG_FILE,
-            FileType::Dir { .. } => CODEXFS_FT_DIR,
-            FileType::CharDevice => CODEXFS_FT_CHRDEV,
-            FileType::BlockDevice => CODEXFS_FT_BLKDEV,
-            FileType::Fifo => CODEXFS_FT_FIFO,
-            FileType::Socket => CODEXFS_FT_SOCK,
-            FileType::Symlink => CODEXFS_FT_SYMLINK,
-        })
+impl From<&FileType> for CodexFsFileType {
+    fn from(file_type: &FileType) -> Self {
+        match file_type {
+            FileType::File(_) => CodexFsFileType::File,
+            FileType::Dir(_) => CodexFsFileType::Dir,
+            FileType::CharDevice => CodexFsFileType::CharDevice,
+            FileType::BlockDevice => CodexFsFileType::BlockDevice,
+            FileType::Fifo => CodexFsFileType::Fifo,
+            FileType::Socket => CodexFsFileType::Socket,
+            FileType::Symlink => CodexFsFileType::Symlink,
+        }
     }
 }
+
 
 #[derive(Debug)]
 pub struct Inode {
