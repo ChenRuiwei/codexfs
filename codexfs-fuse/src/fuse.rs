@@ -1,61 +1,72 @@
 use std::{
-    cell::{Ref, RefCell},
+    cell::Ref,
     ffi::OsStr,
     os::unix::fs::FileExt,
-    rc::Rc,
     time::{Duration, SystemTime},
 };
 
 use codexfs_core::{
-    inode::{get_inode, load_inode, Inode},
+    inode::{get_inode, fuse_load_inode, FileType, Inode},
     sb::get_sb,
     utils::round_up,
     CodexFsFileType, CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS,
 };
-use fuser::{FileAttr, FileType, Filesystem, Request, FUSE_ROOT_ID};
-use log::{debug, info, warn};
+use fuser::{FileAttr, Filesystem, Request, FUSE_ROOT_ID};
+use log::{debug, info};
 
 fn codexfsfuse_to_nid(ino: u64) -> u64 {
     if ino == FUSE_ROOT_ID {
-        return get_sb().get_root().borrow().cf_nid;
+        return get_sb().get_root().borrow().common.cf_nid;
     }
     ino - FUSE_ROOT_ID
 }
 
 fn codexfsfuse_to_ino(nid: u64) -> u64 {
-    if nid == get_sb().get_root().borrow().cf_nid {
+    if nid == get_sb().get_root().borrow().common.cf_nid {
         return FUSE_ROOT_ID;
     }
     nid + FUSE_ROOT_ID
 }
 
-fn codexfsfuse_filetype_cast(file_type: CodexFsFileType) -> fuser::FileType {
+fn codexfsfuse_filetype_cast(file_type: &FileType) -> fuser::FileType {
     match file_type {
-        CodexFsFileType::Unknown => todo!(),
-        CodexFsFileType::File => FileType::RegularFile,
-        CodexFsFileType::Dir => FileType::Directory,
-        CodexFsFileType::CharDevice => FileType::CharDevice,
-        CodexFsFileType::BlockDevice => FileType::BlockDevice,
-        CodexFsFileType::Fifo => FileType::NamedPipe,
-        CodexFsFileType::Socket => FileType::Socket,
-        CodexFsFileType::Symlink => FileType::Symlink,
+        FileType::File { .. } => fuser::FileType::RegularFile,
+        FileType::Dir { .. } => fuser::FileType::Directory,
+        FileType::CharDevice => fuser::FileType::CharDevice,
+        FileType::BlockDevice => fuser::FileType::BlockDevice,
+        FileType::Fifo => fuser::FileType::NamedPipe,
+        FileType::Socket => fuser::FileType::Socket,
+        FileType::Symlink => fuser::FileType::Symlink,
+    }
+}
+
+fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileType {
+    match file_type {
+        CodexFsFileType::File => fuser::FileType::RegularFile,
+        CodexFsFileType::Dir => fuser::FileType::Directory,
+        CodexFsFileType::CharDevice => fuser::FileType::CharDevice,
+        CodexFsFileType::BlockDevice => fuser::FileType::BlockDevice,
+        CodexFsFileType::Fifo => fuser::FileType::NamedPipe,
+        CodexFsFileType::Socket => fuser::FileType::Socket,
+        CodexFsFileType::Symlink => fuser::FileType::Symlink,
+        CodexFsFileType::Unknown => unreachable!(),
     }
 }
 
 fn codexfsfuse_inode_attr(inode: &Ref<Inode>) -> FileAttr {
     FileAttr {
-        ino: codexfsfuse_to_ino(inode.cf_ino),
-        size: inode.cf_size,
-        blocks: round_up(inode.cf_size, CODEXFS_BLKSIZ as _) >> CODEXFS_BLKSIZ_BITS,
+        ino: codexfsfuse_to_ino(inode.common.cf_ino),
+        size: inode.common.cf_size,
+        blocks: round_up(inode.common.cf_size, CODEXFS_BLKSIZ as _) >> CODEXFS_BLKSIZ_BITS,
         atime: SystemTime::now(),
         mtime: SystemTime::now(),
         ctime: SystemTime::now(),
         crtime: SystemTime::now(),
-        kind: codexfsfuse_filetype_cast(inode.file_type),
-        perm: inode.cf_mode as _,
-        nlink: inode.cf_nlink as _,
-        uid: inode.cf_uid,
-        gid: inode.cf_gid,
+        kind: codexfsfuse_filetype_cast(&inode.file_type),
+        perm: inode.common.cf_mode as _,
+        nlink: inode.common.cf_nlink as _,
+        uid: inode.common.cf_uid,
+        gid: inode.common.cf_gid,
         rdev: 0,
         blksize: 0,
         flags: 0,
@@ -80,7 +91,7 @@ impl Filesystem for CodexFs {
         info!("lookup(parent: {:#x?}, name {:?})", parent, name);
 
         let parent = get_inode(codexfsfuse_to_nid(parent)).unwrap();
-        for dentry in parent.borrow().dentries.iter() {
+        for dentry in parent.borrow().get_dir_data().dentries.iter() {
             if dentry.file_name() == name {
                 reply.entry(
                     &Duration::new(0, 0),
@@ -96,7 +107,7 @@ impl Filesystem for CodexFs {
 
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, fh: Option<u64>, reply: fuser::ReplyAttr) {
         info!("getattr(ino: {:#x?}, fh: {:#x?})", ino, fh);
-        let inode = load_inode(codexfsfuse_to_nid(ino)).unwrap();
+        let inode = fuse_load_inode(codexfsfuse_to_nid(ino)).unwrap();
         let inode = inode.borrow();
         reply.attr(&Duration::new(0, 0), &codexfsfuse_inode_attr(&inode));
     }
@@ -131,10 +142,13 @@ impl Filesystem for CodexFs {
         info!("readlink(ino: {:#x?})", ino);
         let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
 
-        let mut buf = vec![0; inode.borrow().cf_size as usize];
+        let mut buf = vec![0; inode.borrow().common.cf_size as usize];
         get_sb()
             .img_file
-            .read_exact_at(&mut buf, (inode.borrow().cf_nid + 1) << CODEXFS_ISLOT_BITS)
+            .read_exact_at(
+                &mut buf,
+                (inode.borrow().common.cf_nid + 1) << CODEXFS_ISLOT_BITS,
+            )
             .unwrap();
         reply.data(&buf);
     }
@@ -260,10 +274,10 @@ impl Filesystem for CodexFs {
         assert!(offset >= 0);
 
         let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
-        let mut buf = vec![0; inode.borrow().cf_size as usize];
+        let mut buf = vec![0; inode.borrow().common.cf_size as usize];
         get_sb()
             .img_file
-            .read_exact_at(&mut buf, inode.borrow().cf_blkpos.unwrap())
+            .read_exact_at(&mut buf, inode.borrow().get_file_data().cf_blkpos.unwrap())
             .unwrap();
         reply.data(&buf);
     }
@@ -354,15 +368,16 @@ impl Filesystem for CodexFs {
         let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
         for (index, dentry) in inode
             .borrow()
+            .get_dir_data()
             .dentries
             .iter()
             .skip(offset as usize)
             .enumerate()
         {
             let buffer_full = reply.add(
-                codexfsfuse_to_ino(dentry.inode.borrow().cf_nid),
+                codexfsfuse_to_ino(dentry.inode.borrow().common.cf_nid),
                 offset + index as i64 + 1,
-                codexfsfuse_filetype_cast(dentry.file_type),
+                codexfsfuse_codexfsfiletype_cast(dentry.file_type),
                 dentry.file_name(),
             );
             if buffer_full {

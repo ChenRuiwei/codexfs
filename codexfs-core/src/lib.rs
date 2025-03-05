@@ -20,7 +20,7 @@ type uid_t = libc::uid_t;
 type ino_t = libc::ino_t;
 type mode_t = libc::mode_t;
 
-pub const CODEXFS_MAGIC: u32 = 0x114514;
+pub const CODEXFS_MAGIC: u32 = 114514;
 
 pub const CODEXFS_BLKSIZ_BITS: u8 = 12;
 pub const CODEXFS_BLKSIZ: u16 = 1 << CODEXFS_BLKSIZ_BITS;

@@ -13,6 +13,10 @@ mkfs-gdb:
 fuse:
 	cargo run --package codexfs-fuse -- img.tmp mnt
 
+.PHONY: fuse-gdb
+fuse-gdb:
+	rust-gdb --args target/debug/codexfs-fuse -- img.tmp mnt
+
 .PHONY: test
 test:
 	cargo test

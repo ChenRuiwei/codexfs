@@ -45,13 +45,15 @@ fn main() {
     set_sb(img_file);
     let root = inode::mkfs_load_inode(Path::new(&args.src_path), None).unwrap();
     get_mut_sb().set_root(root);
-    let root = get_sb().get_root();
-    root.borrow().print_recursive(0);
 
-    inode::mkfs_calc_inode_off(root);
+    inode::mkfs_calc_inode_off();
     sb::mkfs_balloc_super_block();
-    inode::mkfs_balloc_inode(root);
+    inode::mkfs_balloc_inode();
+    inode::get_mut_inode_vec()
+        .inodes
+        .iter()
+        .for_each(|i| println!("{:?}", i.borrow().common.path));
 
     sb::mkfs_dump_super_block().unwrap();
-    inode::mkfs_dump_inode(root).unwrap();
+    inode::mkfs_dump_inode().unwrap();
 }

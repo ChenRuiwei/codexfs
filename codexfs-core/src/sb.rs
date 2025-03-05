@@ -66,7 +66,7 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             magic: CODEXFS_MAGIC,
             checksum: 0,
             blkszbits: CODEXFS_BLKSIZ_BITS,
-            root_nid: sb.get_root().borrow().cf_nid,
+            root_nid: sb.get_root().borrow().common.cf_nid,
             inos: sb.ino,
             blocks: 0,
             reserved: [0; _],
@@ -88,12 +88,14 @@ pub fn get_mut_sb() -> &'static mut SuperBlock {
     unsafe { SUPER_BLOCK.get_mut().unwrap() }
 }
 
-pub fn load_super_block() -> Result<()> {
+pub fn fuse_load_super_block() -> Result<()> {
     let mut sb_buf = [0; size_of::<CodexFsSuperBlock>()];
     get_sb()
         .img_file
         .read_exact_at(&mut sb_buf, CODEXFS_SUPERBLK_OFF)?;
     let codexfs_sb: &CodexFsSuperBlock = from_bytes(&sb_buf);
+    let magic = codexfs_sb.magic;
+    assert_eq!(magic, CODEXFS_MAGIC);
     let sb = get_mut_sb();
     sb.set_root(Rc::new(RefCell::new(Inode::from_nid(codexfs_sb.root_nid)?)));
     Ok(())

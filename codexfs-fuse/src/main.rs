@@ -48,7 +48,7 @@ fn main() {
     let img_file = File::open(&args.img_path).unwrap();
     set_sb(img_file);
 
-    sb::load_super_block().unwrap();
+    sb::fuse_load_super_block().unwrap();
 
     let options = vec![MountOption::FSName("fuser".to_string())];
     fuser::mount2(CodexFs, &args.mnt_path, &options).unwrap();
