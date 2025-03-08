@@ -360,4 +360,11 @@ extern "C" {
         strm: *mut lzma_stream,
         options: *const lzma_options_lzma,
     ) -> lzma_ret;
+    pub fn lzma_microlzma_decoder(
+        strm: *mut lzma_stream,
+        comp_size: u64,
+        uncomp_size: u64,
+        uncomp_size_is_exact: lzma_bool,
+        dict_size: u32,
+    ) -> lzma_ret;
 }

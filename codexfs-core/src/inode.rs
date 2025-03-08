@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, checked::from_bytes};
 use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
-use xz2::stream::Stream;
+use xz2::stream::{LzmaOptions, Stream};
 
 use crate::{
     CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsExtent,
@@ -313,8 +313,9 @@ impl Inode {
         let FileType::File(file) = file_type else {
             panic!()
         };
-
-        file.extents.push(CodexFsExtent { off, frag_off });
+        let codexfs_extent = CodexFsExtent { off, frag_off };
+        log::info!("push extent {codexfs_extent:?}");
+        file.extents.push(codexfs_extent);
         match (off + len).cmp(&common.size) {
             Ordering::Less => Some(()),
             Ordering::Equal => None,
@@ -507,11 +508,12 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
     let mut inode = inode;
 
     while (get_cmpr_mgr().off as usize) < get_cmpr_mgr().origin_data.len() {
-        // let mut stream = Stream::new_microlzma_encoder(
-        //     &LzmaOptions::new_preset(get_cmpr_mgr().lzma_level).unwrap(),
-        // )
-        let mut stream =
-            Stream::new_easy_encoder(get_cmpr_mgr().lzma_level, xz2::stream::Check::None).unwrap();
+        let mut stream = Stream::new_microlzma_encoder(
+            &LzmaOptions::new_preset(get_cmpr_mgr().lzma_level).unwrap(),
+        )?;
+        // let mut stream =
+        //     Stream::new_easy_encoder(get_cmpr_mgr().lzma_level,
+        // xz2::stream::Check::None).unwrap();
         let status = stream
             .process(
                 &get_cmpr_mgr().origin_data[(get_cmpr_mgr().off) as usize..],
@@ -520,9 +522,10 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
             )
             .unwrap();
         log::debug!(
-            "total_in {}, delta {}",
+            "off {}, total_in {}, total_out {}",
             get_cmpr_mgr().off,
-            stream.total_in()
+            stream.total_in(),
+            stream.total_out(),
         );
         let woff = get_bufmgr_mut().balloc(CODEXFS_BLKSIZ as u64, BufferType::Data);
         assert_eq!(woff, round_down(woff, CODEXFS_BLKSIZ as _));
@@ -530,8 +533,11 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
 
         let mut frag_off = 0;
         while frag_off < stream.total_in() {
-            inode.borrow_mut().get_file_meta_mut().blk_id =
-                Some((woff >> CODEXFS_BLKSIZ_BITS) as _);
+            inode
+                .borrow_mut()
+                .get_file_meta_mut()
+                .blk_id
+                .get_or_insert((woff >> CODEXFS_BLKSIZ_BITS) as _);
             log::info!(
                 "path {}, blk_id {:?}",
                 inode.borrow().path().display(),
@@ -556,6 +562,14 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
             get_cmpr_mgr_mut().off += len;
             frag_off += len;
         }
+
+        get_sb_mut().end_data_blk_id = (woff >> CODEXFS_BLKSIZ_BITS) as _;
+        get_sb_mut().end_data_blk_sz = stream.total_out() as _;
+        log::info!(
+            "end blk id {}, end blk sz {}",
+            get_sb().end_data_blk_id,
+            get_sb().end_data_blk_sz
+        );
     }
 
     Ok(())
@@ -646,16 +660,18 @@ pub fn mkfs_dump_inode() -> Result<()> {
 
 pub fn fuse_load_inode_file(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<RefCell<Inode>>> {
     let mut inode = Inode::from_codexfs_inode(codexfs_inode, nid);
-    let codexfs_extent_off = (nid + 1) << CODEXFS_ISLOT_BITS;
+    let mut codexfs_extent_off = (nid + 1) << CODEXFS_ISLOT_BITS;
     let mut codexfs_extent_buf = [0; size_of::<CodexFsExtent>()];
 
+    log::info!("nid {nid} blks {}", { codexfs_inode.blks });
     for _ in 0..codexfs_inode.blks {
         get_sb()
             .img_file
             .read_exact_at(&mut codexfs_extent_buf, codexfs_extent_off)?;
         let extent: CodexFsExtent = *from_bytes::<CodexFsExtent>(&codexfs_extent_buf);
-        log::info!("push extent");
+        log::info!("nid {nid} push extent");
         inode.get_file_meta_mut().extents.push(extent);
+        codexfs_extent_off += size_of::<CodexFsExtent>() as u64;
     }
 
     Ok(Rc::new(RefCell::new(inode)))
@@ -715,7 +731,7 @@ pub fn fuse_load_inode(nid: u64) -> Result<Rc<RefCell<Inode>>> {
     let mut inode_buf = [0; size_of::<CodexFsInode>()];
     let img_file = &get_sb().img_file;
 
-    log::info!("nid: {}", nid);
+    log::info!("load inode nid {nid}");
     img_file.read_exact_at(&mut inode_buf, nid << CODEXFS_ISLOT_BITS)?;
     let codexfs_inode: &CodexFsInode = from_bytes(&inode_buf);
 
@@ -766,25 +782,35 @@ pub fn fuse_read_inode_file(inode: Rc<RefCell<Inode>>, off: u32, len: u32) -> Re
     let i = file.extents.partition_point(|&e| e.off <= off);
     log::info!("read_inode_file {}", i);
     for (i, e) in file.extents.iter().enumerate().skip(i - 1) {
-        log::info!("shit");
         log::info!("i {i}, e {:?}", e);
 
         let mut output = Vec::with_capacity(MEM_LIMIT);
         let blk_id = file.blk_id.unwrap() + i as u32;
-        log::info!("blk_id {:?}", blk_id);
         get_sb()
             .img_file
             .read_exact_at(&mut input, (blk_id as u64) << (CODEXFS_BLKSIZ_BITS as u64))?;
 
-        let mut stream = Stream::new_auto_decoder(MEM_LIMIT as _, 0)?;
+        log::info!(
+            "end blk id {}, end blk sz {}",
+            get_sb().end_data_blk_id,
+            get_sb().end_data_blk_sz
+        );
+        let comp_size = if get_sb().end_data_blk_id == blk_id {
+            get_sb().end_data_blk_sz
+        } else {
+            CODEXFS_BLKSIZ
+        };
+        log::info!("blk_id {}, comp_size {}", blk_id, comp_size);
+        let mut stream =
+            Stream::new_microlzma_decoder(comp_size as _, MEM_LIMIT as _, false, 8 * 1024 * 1024)?;
         let status = stream.process_vec(&input, &mut output, xz2::stream::Action::Finish)?;
 
         log::info!("total_out {}", stream.total_out());
-        let len_consumed = min(len, stream.total_out() as u32 - e.frag_off);
+        let len_consumed = min(len_left, stream.total_out() as u32 - e.frag_off);
         buf.extend(&output[e.frag_off as _..(e.frag_off + len_consumed) as _]);
         len_left -= len_consumed;
         log::info!("output len {}", output.len());
-        log::info!("output {}", String::from_utf8(output)?);
+        log::info!("output {}", String::from_utf8_lossy_owned(output));
         if len_left == 0 {
             break;
         }

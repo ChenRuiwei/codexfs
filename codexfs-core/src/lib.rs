@@ -2,6 +2,7 @@
 #![feature(generic_arg_infer)]
 #![allow(static_mut_refs)]
 #![feature(vec_push_within_capacity)]
+#![feature(string_from_utf8_lossy_owned)]
 
 pub mod buffer;
 pub mod compress;
@@ -53,7 +54,9 @@ pub struct CodexFsSuperBlock {
     pub inos: ino_t,   // total valid ino # (== f_files - f_favail)
 
     pub blocks: u32, // used for statfs
-    pub reserved: [u8; 99],
+    pub end_data_blk_id: u32,
+    pub end_data_blk_sz: u16,
+    pub reserved: [u8; 93],
 }
 
 // CODEXFS inode datalayout (i_format in on-disk inode):
@@ -180,7 +183,7 @@ pub struct CodexFsDirent {
 }
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct CodexFsExtent {
     off: u32,      // offset in file
     frag_off: u32, // offset in decompressed fragment

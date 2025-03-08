@@ -11,7 +11,7 @@ use std::io;
 use std::mem;
 use std::slice;
 
-use lzma_sys;
+use lzma_sys::{self, lzma_bool};
 
 /// Representation of an in-memory LZMA encoding or decoding stream.
 ///
@@ -309,19 +309,6 @@ impl Stream {
         }
     }
 
-    /// personal
-    pub fn new_microlzma_encoder(options: &LzmaOptions) -> Result<Stream, Error> {
-        unsafe {
-            let mut init = Stream { raw: mem::zeroed() };
-
-            cvt(lzma_sys::lzma_microlzma_encoder(
-                &mut init.raw,
-                &options.raw,
-            ))?;
-            Ok(init)
-        }
-    }
-
     /// Initialize .xz Stream encoder using a custom filter chain
     ///
     /// This function is similar to `new_easy_encoder` but a custom filter chain
@@ -333,6 +320,19 @@ impl Stream {
                 &mut init.raw,
                 filters.inner.as_ptr(),
                 check as lzma_sys::lzma_check,
+            ))?;
+            Ok(init)
+        }
+    }
+
+    /// personal
+    pub fn new_microlzma_encoder(options: &LzmaOptions) -> Result<Stream, Error> {
+        unsafe {
+            let mut init = Stream { raw: mem::zeroed() };
+
+            cvt(lzma_sys::lzma_microlzma_encoder(
+                &mut init.raw,
+                &options.raw,
             ))?;
             Ok(init)
         }
@@ -372,6 +372,26 @@ impl Stream {
         unsafe {
             let mut init = Stream { raw: mem::zeroed() };
             cvt(lzma_sys::lzma_auto_decoder(&mut init.raw, memlimit, flags))?;
+            Ok(init)
+        }
+    }
+
+    /// personal
+    pub fn new_microlzma_decoder(
+        comp_size: u64,
+        uncomp_size: u64,
+        uncomp_size_is_exact: bool,
+        dict_size: u32,
+    ) -> Result<Stream, Error> {
+        unsafe {
+            let mut init = Stream { raw: mem::zeroed() };
+            cvt(lzma_sys::lzma_microlzma_decoder(
+                &mut init.raw,
+                comp_size,
+                uncomp_size,
+                uncomp_size_is_exact as lzma_bool,
+                dict_size,
+            ))?;
             Ok(init)
         }
     }
@@ -560,8 +580,8 @@ impl LzmaOptions {
     /// or tree. The searching stops if
     ///
     ///  - a match of at least `nice_len` bytes long is found;
-    ///  - all match candidates from the hash chain or binary tree have
-    ///    been checked; or
+    ///  - all match candidates from the hash chain or binary tree have been
+    ///    checked; or
     ///  - maximum search depth is reached.
     ///
     /// Maximum search depth is needed to prevent the match finder from wasting

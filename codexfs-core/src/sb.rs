@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, from_bytes};
 
 use crate::{
@@ -18,23 +18,33 @@ use crate::{
 #[derive(Debug)]
 pub struct SuperBlock {
     pub ino: ino_t,
-    pub start_off: u64,
     pub img_file: File,
     root: OnceCell<Rc<RefCell<Inode>>>,
+    pub end_data_blk_id: u32,
+    pub end_data_blk_sz: u16,
 }
 
 impl SuperBlock {
     fn new(img_file: File) -> Self {
         Self {
             ino: 0,
-            start_off: 0,
+            end_data_blk_id: 0,
+            end_data_blk_sz: 0,
             img_file,
             root: OnceCell::new(),
         }
     }
 
-    pub fn set_root(&mut self, root: Rc<RefCell<Inode>>) {
+    pub fn from_codexfs_sb(&mut self, codexfs_sb: &CodexFsSuperBlock) -> Result<()> {
+        let root = Inode::load_from_nid(codexfs_sb.root_nid)?;
         self.root.set(root).unwrap();
+        self.end_data_blk_id = codexfs_sb.end_data_blk_id;
+        self.end_data_blk_sz = codexfs_sb.end_data_blk_sz;
+        Ok(())
+    }
+
+    pub fn set_root(&self, root: Rc<RefCell<Inode>>) {
+        self.root.set(root).unwrap()
     }
 
     pub fn get_root(&self) -> &Rc<RefCell<Inode>> {
@@ -45,18 +55,6 @@ impl SuperBlock {
         let ino = self.ino;
         self.ino += 1;
         ino
-    }
-
-    pub fn get_start_off(&self) -> u64 {
-        self.start_off
-    }
-
-    pub fn set_start_off(&mut self, off: u64) {
-        self.start_off = off
-    }
-
-    pub fn inc_start_off(&mut self, inc: u64) {
-        self.start_off += inc
     }
 }
 
@@ -70,6 +68,8 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             inos: sb.ino,
             blocks: 0,
             reserved: [0; _],
+            end_data_blk_id: sb.end_data_blk_id,
+            end_data_blk_sz: sb.end_data_blk_sz,
         }
     }
 }
@@ -97,7 +97,7 @@ pub fn fuse_load_super_block() -> Result<()> {
     let magic = codexfs_sb.magic;
     assert_eq!(magic, CODEXFS_MAGIC);
     let sb = get_sb_mut();
-    sb.set_root(Inode::load_from_nid(codexfs_sb.root_nid)?);
+    sb.from_codexfs_sb(codexfs_sb)?;
     Ok(())
 }
 
