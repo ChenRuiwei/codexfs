@@ -27,6 +27,15 @@ fuse:
 fuse-gdb:
 	rust-gdb --args target/$(MODE)/codexfs-fuse -- $(IMAGE) $(MNT)
 
+.PHONY: tokei
+tokei:
+	tokei -e crates
+
 .PHONY: test
 test:
 	cargo test
+
+.PHONY: clean
+clean:
+	cargo clean
+	rm -rf *.img

@@ -1,6 +1,7 @@
 #![feature(once_cell_get_mut)]
 #![feature(generic_arg_infer)]
 #![allow(static_mut_refs)]
+#![feature(vec_push_within_capacity)]
 
 pub mod buffer;
 pub mod compress;
@@ -8,7 +9,7 @@ pub mod inode;
 pub mod sb;
 pub mod utils;
 
-use std::os::unix::fs::FileTypeExt;
+use std::{fmt::Debug, os::unix::fs::FileTypeExt};
 
 use anyhow::Result;
 use bitflags::bitflags;
@@ -79,12 +80,13 @@ pub struct CodexFsInode {
     pub format: CodexFsInodeFormat,
     pub mode: mode_t,
     pub nlink: u16,
-    pub size: u64,
-    pub blkpos: u64,
+    pub size: u32,
     pub ino: ino_t,
     pub uid: uid_t,
     pub gid: gid_t,
-    pub reserved: [u8; 24], // reserved
+    pub blk_id: u32,
+    pub blks: u16,
+    pub reserved: [u8; 30], // reserved
 }
 
 #[derive(Clone, Copy, Debug, Zeroable)]
@@ -177,21 +179,11 @@ pub struct CodexFsDirent {
     pub reserved: u8,               // reserved
 }
 
-#[derive(Clone, Copy, Debug, Zeroable)]
-#[repr(u32)]
-pub enum CodexFsLclusterIndexEnum {
-    Head(u32),
-    NonHead(u16, u16),
-}
-
-unsafe impl Pod for CodexFsLclusterIndexEnum {}
-
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
-pub struct CodexFsLclusterIndex {
-    reserved: u16,
-    cluster_off: u16,
-    e: CodexFsLclusterIndexEnum,
+pub struct CodexFsExtent {
+    off: u32,      // offset in file
+    frag_off: u32, // offset in decompressed fragment
 }
 
 #[cfg(test)]
@@ -203,5 +195,6 @@ mod tests {
         assert_eq!(size_of::<CodexFsSuperBlock>(), 128);
         assert_eq!(size_of::<CodexFsInode>(), 1 << CODEXFS_ISLOT_BITS);
         assert_eq!(size_of::<CodexFsDirent>(), 12);
+        assert_eq!(size_of::<CodexFsExtent>(), 8);
     }
 }

@@ -3,6 +3,7 @@ use std::{
     cmp::{Ordering, min},
     collections::HashMap,
     fs,
+    io::Read,
     ops::{Deref, DerefMut},
     os::unix::fs::{FileExt, FileTypeExt, MetadataExt},
     path::{Path, PathBuf},
@@ -12,19 +13,18 @@ use std::{
 use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, checked::from_bytes};
 use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
-use log::info;
-use xz2::stream::{LzmaOptions, Stream};
+use xz2::stream::Stream;
 
 use crate::{
-    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType,
-    CodexFsInode, CodexFsInodeFormat, CodexFsLclusterIndex, CodexFsLclusterIndexEnum,
+    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsExtent,
+    CodexFsFileType, CodexFsInode, CodexFsInodeFormat,
     buffer::{BufferType, get_bufmgr_mut},
-    codexfs_nid,
-    compress::{LZMA_LEVEL, get_cmpr_mgr, get_cmpr_mgr_mut},
+    codexfs_blknr, codexfs_nid,
+    compress::{get_cmpr_mgr, get_cmpr_mgr_mut},
     gid_t, ino_t, mode_t,
     sb::{get_sb, get_sb_mut},
     uid_t,
-    utils::{is_dot_or_dotdot, round_down},
+    utils::{is_dot_or_dotdot, round_down, round_up},
 };
 
 type InodeTable = HashMap<ino_t, Rc<RefCell<Inode>>>;
@@ -69,8 +69,8 @@ pub enum FileType {
 
 #[derive(Debug, Default)]
 pub struct FileMeta {
-    pub blkpos: Option<u64>,
-    pub lcluster_idxs: Vec<CodexFsLclusterIndex>,
+    pub blk_id: Option<u32>,
+    pub extents: Vec<CodexFsExtent>,
 }
 
 #[derive(Debug, Default)]
@@ -135,12 +135,12 @@ impl From<&CodexFsInode> for FileType {
     fn from(codexfs_inode: &CodexFsInode) -> Self {
         match codexfs_inode.mode & S_IFMT {
             S_IFREG => FileType::File(FileMeta {
-                blkpos: if codexfs_inode.blkpos != 0 {
-                    Some(codexfs_inode.blkpos)
+                blk_id: if codexfs_inode.blk_id != 0 {
+                    Some(codexfs_inode.blk_id)
                 } else {
                     None
                 },
-                lcluster_idxs: Vec::new(),
+                ..Default::default()
             }),
             S_IFDIR => FileType::Dir(DirMeta::default()),
             S_IFCHR => FileType::CharDevice,
@@ -176,7 +176,7 @@ pub struct Inode {
 pub struct InodeCommon {
     pub path: Option<PathBuf>,
 
-    pub size: u64,
+    pub size: u32,
     pub ino: ino_t,
     pub uid: uid_t,
     pub gid: gid_t,
@@ -196,11 +196,11 @@ pub struct Dentry {
 impl Inode {
     fn new(path: &Path) -> Self {
         let metadata = path.symlink_metadata().unwrap();
-        info!("{}, size {}", path.display(), metadata.len());
+        log::info!("{}, size {}", path.display(), metadata.len());
         Self {
             common: InodeCommon {
                 path: Some(path.into()),
-                size: metadata.len(),
+                size: metadata.len() as _,
                 nlink: if metadata.is_dir() { 2 } else { 0 },
                 ino: get_sb_mut().get_ino_and_inc(),
                 gid: metadata.gid(),
@@ -212,13 +212,15 @@ impl Inode {
         }
     }
 
-    pub fn load_from_nid(nid: u64) -> Result<Self> {
+    pub fn load_from_nid(nid: u64) -> Result<Rc<RefCell<Self>>> {
         let mut inode_buf = [0; size_of::<CodexFsInode>()];
         get_sb()
             .img_file
             .read_exact_at(&mut inode_buf, nid << CODEXFS_ISLOT_BITS)?;
         let codexfs_inode: &CodexFsInode = from_bytes(&inode_buf);
-        Ok(Self::from_codexfs_inode(codexfs_inode, nid))
+        let inode = Rc::new(RefCell::new(Self::from_codexfs_inode(codexfs_inode, nid)));
+        insert_inode(inode.borrow().common.ino, inode.clone());
+        Ok(inode)
     }
 
     fn from_codexfs_inode(codexfs_inode: &CodexFsInode, nid: u64) -> Self {
@@ -294,7 +296,7 @@ impl Inode {
         self.get_dir_meta_mut().parent = Some(parent)
     }
 
-    fn set_size(&mut self, size: u64) {
+    fn set_size(&mut self, size: u32) {
         self.common.size = size
     }
 
@@ -302,41 +304,17 @@ impl Inode {
         self.common.nlink += 1
     }
 
-    fn inc_blkpos(&mut self, start_off: u64) {
-        self.get_file_meta_mut().blkpos = Some(self.get_file_meta().blkpos.unwrap() + start_off)
-    }
-
     fn add_dentry(&mut self, dentry: Dentry) {
         self.get_dir_meta_mut().dentries.push(dentry)
     }
 
-    fn push_lcluster_idxs(&mut self, off: u64, len: u64, blk_id: u32) -> Option<()> {
+    fn push_extent(&mut self, off: u32, len: u32, frag_off: u32) -> Option<()> {
         let (common, file_type) = self.split_borrow_mut();
-        let FileType::File(meta) = file_type else {
+        let FileType::File(file) = file_type else {
             panic!()
         };
-        let mut len_left = len;
 
-        // handle head lcluster_idx
-        let lcluster_idx = CodexFsLclusterIndex {
-            reserved: 0,
-            cluster_off: (off % CODEXFS_BLKSIZ as u64) as u16,
-            e: CodexFsLclusterIndexEnum::Head(blk_id),
-        };
-        meta.lcluster_idxs.push(lcluster_idx);
-        len_left -= min(CODEXFS_BLKSIZ as _, len_left);
-
-        // handle nonhead lcluster_idxs
-        while len_left > 0 {
-            let lcluster_idx = CodexFsLclusterIndex {
-                reserved: 0,
-                cluster_off: (off % CODEXFS_BLKSIZ as u64) as u16,
-                e: CodexFsLclusterIndexEnum::NonHead(0, 0),
-            };
-            meta.lcluster_idxs.push(lcluster_idx);
-            len_left -= min(CODEXFS_BLKSIZ as _, len_left);
-        }
-
+        file.extents.push(CodexFsExtent { off, frag_off });
         match (off + len).cmp(&common.size) {
             Ordering::Less => Some(()),
             Ordering::Equal => None,
@@ -363,8 +341,12 @@ impl Dentry {
 
 impl From<&Ref<'_, Inode>> for CodexFsInode {
     fn from(inode: &Ref<'_, Inode>) -> Self {
-        let blkpos = match &inode.file_type {
-            FileType::File(data) => data.blkpos.unwrap_or(0),
+        let blk_id = match &inode.file_type {
+            FileType::File(file) => file.blk_id.unwrap_or(0),
+            _ => 0,
+        };
+        let blks = match &inode.file_type {
+            FileType::File(file) => file.extents.len() as _,
             _ => 0,
         };
         Self {
@@ -372,10 +354,11 @@ impl From<&Ref<'_, Inode>> for CodexFsInode {
             mode: inode.common.mode,
             nlink: inode.common.nlink,
             size: inode.common.size,
-            blkpos,
+            blk_id,
             ino: inode.common.nid,
             uid: inode.common.uid,
             gid: inode.common.gid,
+            blks,
             reserved: [0; _],
         }
     }
@@ -451,10 +434,12 @@ pub fn mkfs_load_inode(
         CodexFsFileType::Socket => todo!(),
     };
 
-    insert_inode(ino, inode.clone());
-    get_inode_vec_mut().inodes.push(inode.clone());
-    if inode.borrow().file_type.is_file() {
-        get_cmpr_mgr_mut().push_file(inode.clone())?;
+    if get_inode(ino).is_none() {
+        if inode.borrow().file_type.is_file() {
+            get_cmpr_mgr_mut().push_file(inode.clone())?;
+        }
+        get_inode_vec_mut().inodes.push(inode.clone());
+        insert_inode(ino, inode.clone());
     }
 
     Ok(inode)
@@ -469,8 +454,7 @@ pub fn mkfs_balloc_inode() {
         match &file_type {
             FileType::File(file) => {
                 let pos = buf_mgr.balloc(
-                    (size_of::<CodexFsInode>()
-                        + file.lcluster_idxs.len() * size_of::<CodexFsLclusterIndex>())
+                    (size_of::<CodexFsInode>() + file.extents.len() * size_of::<CodexFsExtent>())
                         as _,
                     BufferType::Inode,
                 );
@@ -478,7 +462,7 @@ pub fn mkfs_balloc_inode() {
             }
             FileType::Dir { .. } => {
                 let pos = buf_mgr.balloc(
-                    (size_of::<CodexFsInode>() as u64) + common.size,
+                    size_of::<CodexFsInode>() as u64 + common.size as u64,
                     BufferType::Inode,
                 );
                 common.nid = codexfs_nid(pos);
@@ -489,7 +473,7 @@ pub fn mkfs_balloc_inode() {
             FileType::Socket => todo!(),
             FileType::Symlink => {
                 let pos = buf_mgr.balloc(
-                    (size_of::<CodexFsInode>() as u64) + common.size,
+                    size_of::<CodexFsInode>() as u64 + common.size as u64,
                     BufferType::Inode,
                 );
                 common.nid = codexfs_nid(pos);
@@ -523,8 +507,11 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
     let mut inode = inode;
 
     while (get_cmpr_mgr().off as usize) < get_cmpr_mgr().origin_data.len() {
+        // let mut stream = Stream::new_microlzma_encoder(
+        //     &LzmaOptions::new_preset(get_cmpr_mgr().lzma_level).unwrap(),
+        // )
         let mut stream =
-            Stream::new_microlzma_encoder(&LzmaOptions::new_preset(LZMA_LEVEL).unwrap()).unwrap();
+            Stream::new_easy_encoder(get_cmpr_mgr().lzma_level, xz2::stream::Check::None).unwrap();
         let status = stream
             .process(
                 &get_cmpr_mgr().origin_data[(get_cmpr_mgr().off) as usize..],
@@ -532,25 +519,31 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
                 xz2::stream::Action::Finish,
             )
             .unwrap();
-        println!(
+        log::debug!(
             "total_in {}, delta {}",
             get_cmpr_mgr().off,
             stream.total_in()
         );
         let woff = get_bufmgr_mut().balloc(CODEXFS_BLKSIZ as u64, BufferType::Data);
-        let blk_id = (woff >> CODEXFS_BLKSIZ_BITS) as _;
         assert_eq!(woff, round_down(woff, CODEXFS_BLKSIZ as _));
         get_sb().img_file.write_all_at(&output, woff).unwrap();
 
-        let mut total_in_left = stream.total_in();
-        while total_in_left > 0 {
+        let mut frag_off = 0;
+        while frag_off < stream.total_in() {
+            inode.borrow_mut().get_file_meta_mut().blk_id =
+                Some((woff >> CODEXFS_BLKSIZ_BITS) as _);
+            log::info!(
+                "path {}, blk_id {:?}",
+                inode.borrow().path().display(),
+                inode.borrow().get_file_meta().blk_id
+            );
             let len = min(
-                total_in_left,
-                *off + inode.borrow().common.size - get_cmpr_mgr().off,
+                stream.total_in() - frag_off,
+                *off + inode.borrow().common.size as u64 - get_cmpr_mgr().off,
             );
             if inode
                 .borrow_mut()
-                .push_lcluster_idxs(get_cmpr_mgr().off - *off, len, blk_id)
+                .push_extent((get_cmpr_mgr().off - *off) as _, len as _, frag_off as _)
                 .is_none()
             {
                 let Some((_off, _inode)) = it.next() else {
@@ -561,7 +554,7 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
                 inode = _inode;
             };
             get_cmpr_mgr_mut().off += len;
-            total_in_left -= len;
+            frag_off += len;
         }
     }
 
@@ -575,11 +568,11 @@ pub fn mkfs_dump_inode() -> Result<()> {
         let (common, file_type) = guard.deref().split_borrow();
         match file_type {
             FileType::File(file) => {
-                let mut lcluster_idxs_off = (common.nid + 1) << CODEXFS_ISLOT_BITS;
-                for lcluster_idx in file.lcluster_idxs.iter() {
+                let mut extents_off = (common.nid + 1) << CODEXFS_ISLOT_BITS;
+                for codexfs_extent in file.extents.iter() {
                     sb.img_file
-                        .write_all_at(bytes_of(lcluster_idx), lcluster_idxs_off)?;
-                    lcluster_idxs_off += size_of::<CodexFsLclusterIndex>() as u64;
+                        .write_all_at(bytes_of(codexfs_extent), extents_off)?;
+                    extents_off += size_of::<CodexFsExtent>() as u64;
                 }
                 mkfs_dump_codexfs_inode(inode)?;
             }
@@ -627,7 +620,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                     name_off += name.len() as u64;
                 }
                 assert_eq!(
-                    ((common.nid + 1) << CODEXFS_ISLOT_BITS) + common.size,
+                    ((common.nid + 1) << CODEXFS_ISLOT_BITS) + common.size as u64,
                     name_off
                 );
 
@@ -649,6 +642,23 @@ pub fn mkfs_dump_inode() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn fuse_load_inode_file(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<RefCell<Inode>>> {
+    let mut inode = Inode::from_codexfs_inode(codexfs_inode, nid);
+    let codexfs_extent_off = (nid + 1) << CODEXFS_ISLOT_BITS;
+    let mut codexfs_extent_buf = [0; size_of::<CodexFsExtent>()];
+
+    for _ in 0..codexfs_inode.blks {
+        get_sb()
+            .img_file
+            .read_exact_at(&mut codexfs_extent_buf, codexfs_extent_off)?;
+        let extent: CodexFsExtent = *from_bytes::<CodexFsExtent>(&codexfs_extent_buf);
+        log::info!("push extent");
+        inode.get_file_meta_mut().extents.push(extent);
+    }
+
+    Ok(Rc::new(RefCell::new(inode)))
 }
 
 pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<RefCell<Inode>>> {
@@ -710,11 +720,13 @@ pub fn fuse_load_inode(nid: u64) -> Result<Rc<RefCell<Inode>>> {
     let codexfs_inode: &CodexFsInode = from_bytes(&inode_buf);
 
     let file_type: FileType = codexfs_inode.into();
-    let inode = match file_type {
-        FileType::File { .. } => {
-            let inode = Inode::from_codexfs_inode(codexfs_inode, nid);
-            Rc::new(RefCell::new(inode))
+    if !file_type.is_dir() {
+        if let Some(inode) = get_inode(codexfs_inode.ino) {
+            return Ok(inode.clone());
         }
+    }
+    let inode = match file_type {
+        FileType::File { .. } => fuse_load_inode_file(nid, codexfs_inode)?,
         FileType::Dir { .. } => fuse_load_inode_dir(nid, codexfs_inode)?,
         FileType::CharDevice => todo!(),
         FileType::BlockDevice => todo!(),
@@ -730,6 +742,57 @@ pub fn fuse_load_inode(nid: u64) -> Result<Rc<RefCell<Inode>>> {
     Ok(inode)
 }
 
+pub fn fuse_read_inode_file(inode: Rc<RefCell<Inode>>, off: u32, len: u32) -> Result<Vec<u8>> {
+    assert!(inode.borrow().file_type.is_file());
+
+    const MEM_LIMIT: usize = 16 * 1024 * 1024;
+
+    let guard = inode.borrow();
+    let (common, file_type) = guard.split_borrow();
+    let idx = (off >> CODEXFS_BLKSIZ_BITS) as usize;
+    let FileType::File(file) = file_type else {
+        panic!();
+    };
+    log::info!("off: {}, len {}", off, len);
+    let len = min(len, common.size - off);
+    let mut len_left = len;
+    let mut buf = Vec::new();
+
+    log::info!("off: {}, len {}", off, len);
+
+    let mut input = [0; CODEXFS_BLKSIZ as usize];
+
+    log::info!("extents: {:?}", file.extents);
+    let i = file.extents.partition_point(|&e| e.off <= off);
+    log::info!("read_inode_file {}", i);
+    for (i, e) in file.extents.iter().enumerate().skip(i - 1) {
+        log::info!("shit");
+        log::info!("i {i}, e {:?}", e);
+
+        let mut output = Vec::with_capacity(MEM_LIMIT);
+        let blk_id = file.blk_id.unwrap() + i as u32;
+        log::info!("blk_id {:?}", blk_id);
+        get_sb()
+            .img_file
+            .read_exact_at(&mut input, (blk_id as u64) << (CODEXFS_BLKSIZ_BITS as u64))?;
+
+        let mut stream = Stream::new_auto_decoder(MEM_LIMIT as _, 0)?;
+        let status = stream.process_vec(&input, &mut output, xz2::stream::Action::Finish)?;
+
+        log::info!("total_out {}", stream.total_out());
+        let len_consumed = min(len, stream.total_out() as u32 - e.frag_off);
+        buf.extend(&output[e.frag_off as _..(e.frag_off + len_consumed) as _]);
+        len_left -= len_consumed;
+        log::info!("output len {}", output.len());
+        log::info!("output {}", String::from_utf8(output)?);
+        if len_left == 0 {
+            break;
+        }
+    }
+
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod test {
     use std::{
@@ -741,6 +804,7 @@ mod test {
     use anyhow::{Ok, Result};
 
     use crate::{
+        compress::set_cmpr_mgr,
         inode::{get_inode_by_path, mkfs_load_inode},
         sb::set_sb,
     };
@@ -769,6 +833,7 @@ mod test {
 
         {
             set_sb(File::create(img_path)?);
+            set_cmpr_mgr(6);
             let root_inode = mkfs_load_inode(root, None)?;
             let subdir_inode = get_inode_by_path(&subdir).unwrap();
             let hello_inode = get_inode_by_path(&hello).unwrap();
