@@ -46,14 +46,14 @@ fn main() {
     let root = inode::mkfs_load_inode(Path::new(&args.src_path), None).unwrap();
     get_sb_mut().set_root(root);
 
-    inode::mkfs_calc_inode_off();
     sb::mkfs_balloc_super_block();
-    inode::mkfs_balloc_inode();
     inode::get_inode_vec_mut()
         .inodes
         .iter()
         .for_each(|i| println!("{:?}", i.borrow().common.path));
 
     sb::mkfs_dump_super_block().unwrap();
+    inode::mkfs_dump_inode_file_data().unwrap();
+    inode::mkfs_balloc_inode();
     inode::mkfs_dump_inode().unwrap();
 }

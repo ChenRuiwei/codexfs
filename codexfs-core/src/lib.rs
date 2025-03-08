@@ -3,6 +3,7 @@
 #![allow(static_mut_refs)]
 
 pub mod buffer;
+pub mod compress;
 pub mod inode;
 pub mod sb;
 pub mod utils;
@@ -174,6 +175,23 @@ pub struct CodexFsDirent {
     pub nameoff: u16,               // start offset of file name
     pub file_type: CodexFsFileType, // file type
     pub reserved: u8,               // reserved
+}
+
+#[derive(Clone, Copy, Debug, Zeroable)]
+#[repr(u32)]
+pub enum CodexFsLclusterIndexEnum {
+    Head(u32),
+    NonHead(u16, u16),
+}
+
+unsafe impl Pod for CodexFsLclusterIndexEnum {}
+
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[repr(C, packed)]
+pub struct CodexFsLclusterIndex {
+    reserved: u16,
+    cluster_off: u16,
+    e: CodexFsLclusterIndexEnum,
 }
 
 #[cfg(test)]

@@ -91,7 +91,7 @@ impl Filesystem for CodexFs {
         info!("lookup(parent: {:#x?}, name {:?})", parent, name);
 
         let parent = get_inode(codexfsfuse_to_nid(parent)).unwrap();
-        for dentry in parent.borrow().get_dir_data().dentries.iter() {
+        for dentry in parent.borrow().get_dir_meta().dentries.iter() {
             if dentry.file_name() == name {
                 reply.entry(
                     &Duration::new(0, 0),
@@ -277,7 +277,7 @@ impl Filesystem for CodexFs {
         let mut buf = vec![0; inode.borrow().common.size as usize];
         get_sb()
             .img_file
-            .read_exact_at(&mut buf, inode.borrow().get_file_data().blkpos.unwrap())
+            .read_exact_at(&mut buf, inode.borrow().get_file_meta().blkpos.unwrap())
             .unwrap();
         reply.data(&buf);
     }
@@ -368,7 +368,7 @@ impl Filesystem for CodexFs {
         let inode = get_inode(codexfsfuse_to_nid(ino)).unwrap();
         for (index, dentry) in inode
             .borrow()
-            .get_dir_data()
+            .get_dir_meta()
             .dentries
             .iter()
             .skip(offset as usize)

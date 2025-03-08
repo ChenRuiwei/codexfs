@@ -5,3 +5,4 @@ mnt/
 .gdb_history
 .gdbinit
 *.tmp
+*.img

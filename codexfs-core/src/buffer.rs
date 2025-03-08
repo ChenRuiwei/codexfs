@@ -18,7 +18,7 @@ pub fn get_alignment(btype: BufferType) -> u16 {
     match btype {
         BufferType::Meta => 1,
         BufferType::Inode => size_of::<CodexFsInode>() as _,
-        BufferType::Data => 1,
+        BufferType::Data => CODEXFS_BLKSIZ,
     }
 }
 
@@ -28,7 +28,7 @@ pub fn get_bufmgr_mut() -> &'static mut BufferManager {
 }
 
 pub struct BufferBlockTable(
-    [Vec<Rc<RefCell<BufferBlock>>>; (CODEXFS_BLKSIZ + 1) as _], // index means unused size
+    [Vec<Rc<RefCell<BufferBlock>>>; (CODEXFS_BLKSIZ + 1) as _], // index means for unused size
 );
 
 impl Deref for BufferBlockTable {

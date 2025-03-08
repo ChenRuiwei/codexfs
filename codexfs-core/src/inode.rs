@@ -1,8 +1,8 @@
 use std::{
     cell::{OnceCell, Ref, RefCell},
+    cmp::{Ordering, min},
     collections::HashMap,
-    fs::{self, File},
-    io::Read,
+    fs,
     ops::{Deref, DerefMut},
     os::unix::fs::{FileExt, FileTypeExt, MetadataExt},
     path::{Path, PathBuf},
@@ -13,15 +13,18 @@ use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, checked::from_bytes};
 use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 use log::info;
+use xz2::stream::{LzmaOptions, Stream};
 
 use crate::{
-    CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType, CodexFsInode,
-    CodexFsInodeFormat,
+    CODEXFS_BLKSIZ, CODEXFS_BLKSIZ_BITS, CODEXFS_ISLOT_BITS, CodexFsDirent, CodexFsFileType,
+    CodexFsInode, CodexFsInodeFormat, CodexFsLclusterIndex, CodexFsLclusterIndexEnum,
     buffer::{BufferType, get_bufmgr_mut},
-    codexfs_nid, gid_t, ino_t, mode_t,
+    codexfs_nid,
+    compress::{LZMA_LEVEL, get_cmpr_mgr, get_cmpr_mgr_mut},
+    gid_t, ino_t, mode_t,
     sb::{get_sb, get_sb_mut},
     uid_t,
-    utils::is_dot_or_dotdot,
+    utils::{is_dot_or_dotdot, round_down},
 };
 
 type InodeTable = HashMap<ino_t, Rc<RefCell<Inode>>>;
@@ -55,8 +58,8 @@ pub fn get_inode_vec_mut() -> &'static mut InodeVec {
 
 #[derive(Debug)]
 pub enum FileType {
-    File(FileData),
-    Dir(DirData),
+    File(FileMeta),
+    Dir(DirMeta),
     CharDevice,
     BlockDevice,
     Fifo,
@@ -65,12 +68,13 @@ pub enum FileType {
 }
 
 #[derive(Debug, Default)]
-pub struct FileData {
+pub struct FileMeta {
     pub blkpos: Option<u64>,
+    pub lcluster_idxs: Vec<CodexFsLclusterIndex>,
 }
 
 #[derive(Debug, Default)]
-pub struct DirData {
+pub struct DirMeta {
     pub parent: Option<Weak<RefCell<Inode>>>, // root points to itself
     pub dentries: Vec<Dentry>,
 }
@@ -108,9 +112,9 @@ impl FileType {
 impl From<std::fs::FileType> for FileType {
     fn from(val: std::fs::FileType) -> Self {
         if val.is_dir() {
-            FileType::Dir(DirData::default())
+            FileType::Dir(DirMeta::default())
         } else if val.is_file() {
-            FileType::File(FileData::default())
+            FileType::File(FileMeta::default())
         } else if val.is_char_device() {
             FileType::CharDevice
         } else if val.is_block_device() {
@@ -130,14 +134,15 @@ impl From<std::fs::FileType> for FileType {
 impl From<&CodexFsInode> for FileType {
     fn from(codexfs_inode: &CodexFsInode) -> Self {
         match codexfs_inode.mode & S_IFMT {
-            S_IFREG => FileType::File(FileData {
+            S_IFREG => FileType::File(FileMeta {
                 blkpos: if codexfs_inode.blkpos != 0 {
                     Some(codexfs_inode.blkpos)
                 } else {
                     None
                 },
+                lcluster_idxs: Vec::new(),
             }),
-            S_IFDIR => FileType::Dir(DirData::default()),
+            S_IFDIR => FileType::Dir(DirMeta::default()),
             S_IFCHR => FileType::CharDevice,
             S_IFBLK => FileType::BlockDevice,
             S_IFSOCK => FileType::Socket,
@@ -232,44 +237,44 @@ impl Inode {
         }
     }
 
-    pub fn get_file_data(&self) -> &FileData {
-        if let FileType::File(data) = &self.file_type {
-            data
+    pub fn get_file_meta(&self) -> &FileMeta {
+        if let FileType::File(meta) = &self.file_type {
+            meta
         } else {
             panic!()
         }
     }
 
-    pub fn get_file_data_mut(&mut self) -> &mut FileData {
-        if let FileType::File(data) = &mut self.file_type {
-            data
+    pub fn get_file_meta_mut(&mut self) -> &mut FileMeta {
+        if let FileType::File(meta) = &mut self.file_type {
+            meta
         } else {
             panic!()
         }
     }
 
-    pub fn get_dir_data(&self) -> &DirData {
-        if let FileType::Dir(data) = &self.file_type {
-            data
+    pub fn get_dir_meta(&self) -> &DirMeta {
+        if let FileType::Dir(meta) = &self.file_type {
+            meta
         } else {
             panic!()
         }
     }
 
-    pub fn get_dir_data_mut(&mut self) -> &mut DirData {
-        if let FileType::Dir(data) = &mut self.file_type {
-            data
+    pub fn get_dir_meta_mut(&mut self) -> &mut DirMeta {
+        if let FileType::Dir(meta) = &mut self.file_type {
+            meta
         } else {
             panic!()
         }
     }
 
-    fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         self.common.path.as_ref().unwrap()
     }
 
     fn parent(&self) -> Rc<RefCell<Inode>> {
-        self.get_dir_data()
+        self.get_dir_meta()
             .parent
             .as_ref()
             .unwrap()
@@ -286,7 +291,7 @@ impl Inode {
     }
 
     fn set_parent(&mut self, parent: Weak<RefCell<Inode>>) {
-        self.get_dir_data_mut().parent = Some(parent)
+        self.get_dir_meta_mut().parent = Some(parent)
     }
 
     fn set_size(&mut self, size: u64) {
@@ -298,11 +303,45 @@ impl Inode {
     }
 
     fn inc_blkpos(&mut self, start_off: u64) {
-        self.get_file_data_mut().blkpos = Some(self.get_file_data().blkpos.unwrap() + start_off)
+        self.get_file_meta_mut().blkpos = Some(self.get_file_meta().blkpos.unwrap() + start_off)
     }
 
     fn add_dentry(&mut self, dentry: Dentry) {
-        self.get_dir_data_mut().dentries.push(dentry)
+        self.get_dir_meta_mut().dentries.push(dentry)
+    }
+
+    fn push_lcluster_idxs(&mut self, off: u64, len: u64, blk_id: u32) -> Option<()> {
+        let (common, file_type) = self.split_borrow_mut();
+        let FileType::File(meta) = file_type else {
+            panic!()
+        };
+        let mut len_left = len;
+
+        // handle head lcluster_idx
+        let lcluster_idx = CodexFsLclusterIndex {
+            reserved: 0,
+            cluster_off: (off % CODEXFS_BLKSIZ as u64) as u16,
+            e: CodexFsLclusterIndexEnum::Head(blk_id),
+        };
+        meta.lcluster_idxs.push(lcluster_idx);
+        len_left -= min(CODEXFS_BLKSIZ as _, len_left);
+
+        // handle nonhead lcluster_idxs
+        while len_left > 0 {
+            let lcluster_idx = CodexFsLclusterIndex {
+                reserved: 0,
+                cluster_off: (off % CODEXFS_BLKSIZ as u64) as u16,
+                e: CodexFsLclusterIndexEnum::NonHead(0, 0),
+            };
+            meta.lcluster_idxs.push(lcluster_idx);
+            len_left -= min(CODEXFS_BLKSIZ as _, len_left);
+        }
+
+        match (off + len).cmp(&common.size) {
+            Ordering::Less => Some(()),
+            Ordering::Equal => None,
+            Ordering::Greater => panic!(),
+        }
     }
 }
 
@@ -396,9 +435,9 @@ pub fn mkfs_load_inode(
             let inode = mkfs_load_inode_dir(path)?;
             let parent = parent.unwrap_or_else(|| Rc::downgrade(&inode));
             inode.borrow_mut().set_parent(parent);
-            let ndir = inode.borrow().get_dir_data().dentries.len() + 2;
+            let ndir = inode.borrow().get_dir_meta().dentries.len() + 2;
             let mut namesize = 1 + 2;
-            for d in inode.borrow().get_dir_data().dentries.iter() {
+            for d in inode.borrow().get_dir_meta().dentries.iter() {
                 namesize += d.file_name().len();
             }
             inode
@@ -414,6 +453,9 @@ pub fn mkfs_load_inode(
 
     insert_inode(ino, inode.clone());
     get_inode_vec_mut().inodes.push(inode.clone());
+    if inode.borrow().file_type.is_file() {
+        get_cmpr_mgr_mut().push_file(inode.clone())?;
+    }
 
     Ok(inode)
 }
@@ -425,8 +467,13 @@ pub fn mkfs_balloc_inode() {
         let mut guard = inode.borrow_mut();
         let (common, file_type) = guard.deref_mut().split_borrow_mut();
         match &file_type {
-            FileType::File { .. } => {
-                let pos = buf_mgr.balloc(size_of::<CodexFsInode>() as _, BufferType::Inode);
+            FileType::File(file) => {
+                let pos = buf_mgr.balloc(
+                    (size_of::<CodexFsInode>()
+                        + file.lcluster_idxs.len() * size_of::<CodexFsLclusterIndex>())
+                        as _,
+                    BufferType::Inode,
+                );
                 common.nid = codexfs_nid(pos);
             }
             FileType::Dir { .. } => {
@@ -451,20 +498,6 @@ pub fn mkfs_balloc_inode() {
     }
 }
 
-pub fn mkfs_calc_inode_off() {
-    for inode in get_inode_vec_mut().inodes.iter() {
-        let mut guard = inode.borrow_mut();
-        let (common, file_type) = guard.deref_mut().split_borrow_mut();
-        if let FileType::File(data) = file_type {
-            let start_off = get_sb().get_start_off();
-            if data.blkpos.is_none() {
-                data.blkpos = Some(start_off);
-            }
-            get_sb_mut().set_start_off(start_off + common.size);
-        }
-    }
-}
-
 fn mkfs_dump_codexfs_inode(inode: &Rc<RefCell<Inode>>) -> Result<()> {
     log::info!(
         "path: {}, nid: {}",
@@ -480,21 +513,74 @@ fn mkfs_dump_codexfs_inode(inode: &Rc<RefCell<Inode>>) -> Result<()> {
     Ok(())
 }
 
+pub fn mkfs_dump_inode_file_data() -> Result<()> {
+    get_cmpr_mgr_mut().off = 0;
+
+    let mut output = [0; CODEXFS_BLKSIZ as usize];
+    let mut it = get_cmpr_mgr().files.iter();
+    let (off, inode) = it.next().unwrap();
+    let mut off = off;
+    let mut inode = inode;
+
+    while (get_cmpr_mgr().off as usize) < get_cmpr_mgr().origin_data.len() {
+        let mut stream =
+            Stream::new_microlzma_encoder(&LzmaOptions::new_preset(LZMA_LEVEL).unwrap()).unwrap();
+        let status = stream
+            .process(
+                &get_cmpr_mgr().origin_data[(get_cmpr_mgr().off) as usize..],
+                &mut output,
+                xz2::stream::Action::Finish,
+            )
+            .unwrap();
+        println!(
+            "total_in {}, delta {}",
+            get_cmpr_mgr().off,
+            stream.total_in()
+        );
+        let woff = get_bufmgr_mut().balloc(CODEXFS_BLKSIZ as u64, BufferType::Data);
+        let blk_id = (woff >> CODEXFS_BLKSIZ_BITS) as _;
+        assert_eq!(woff, round_down(woff, CODEXFS_BLKSIZ as _));
+        get_sb().img_file.write_all_at(&output, woff).unwrap();
+
+        let mut total_in_left = stream.total_in();
+        while total_in_left > 0 {
+            let len = min(
+                total_in_left,
+                *off + inode.borrow().common.size - get_cmpr_mgr().off,
+            );
+            if inode
+                .borrow_mut()
+                .push_lcluster_idxs(get_cmpr_mgr().off - *off, len, blk_id)
+                .is_none()
+            {
+                let Some((_off, _inode)) = it.next() else {
+                    get_cmpr_mgr_mut().off += len;
+                    break;
+                };
+                off = _off;
+                inode = _inode;
+            };
+            get_cmpr_mgr_mut().off += len;
+            total_in_left -= len;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn mkfs_dump_inode() -> Result<()> {
     let sb = get_sb();
-    let data_start_offset = (get_bufmgr_mut().tail_blk_id() + 1) << CODEXFS_BLKSIZ_BITS;
     for inode in get_inode_vec_mut().inodes.iter() {
         let guard = inode.borrow();
         let (common, file_type) = guard.deref().split_borrow();
         match file_type {
-            FileType::File(_) => {
-                drop(guard);
-                inode.borrow_mut().inc_blkpos(data_start_offset);
-                let mut file = File::open(inode.borrow().path())?;
-                let mut content = Vec::new();
-                file.read_to_end(&mut content)?;
-                sb.img_file
-                    .write_all_at(&content, inode.borrow().get_file_data().blkpos.unwrap())?;
+            FileType::File(file) => {
+                let mut lcluster_idxs_off = (common.nid + 1) << CODEXFS_ISLOT_BITS;
+                for lcluster_idx in file.lcluster_idxs.iter() {
+                    sb.img_file
+                        .write_all_at(bytes_of(lcluster_idx), lcluster_idxs_off)?;
+                    lcluster_idxs_off += size_of::<CodexFsLclusterIndex>() as u64;
+                }
                 mkfs_dump_codexfs_inode(inode)?;
             }
             FileType::Dir(dir) => {
