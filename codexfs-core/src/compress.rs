@@ -48,7 +48,7 @@ impl CompressManager {
         let content = inode.borrow().read_to_end()?;
         self.origin_data.extend(content);
         self.files.push((self.off, inode.clone()));
-        self.off += inode.borrow().common.size as u64;
+        self.off += inode.borrow().get_file_meta().size as u64;
 
         log::info!("push file {}", inode.borrow().path().display());
         Ok(())

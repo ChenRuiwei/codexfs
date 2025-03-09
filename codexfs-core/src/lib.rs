@@ -108,13 +108,12 @@ pub struct CodexFsInode {
     pub gid: gid_t,
     pub blk_id: blk_t,
     pub blks: u16,
-    pub reserved: [u8; 40], // reserved
+    pub reserved: [u8; 40],
 }
 
 #[derive(Clone, Copy, Debug, Zeroable)]
 #[repr(u8)]
 pub enum CodexFsFileType {
-    Unknown,
     File,
     Dir,
     CharDevice,
@@ -173,7 +172,7 @@ impl From<std::fs::FileType> for CodexFsFileType {
         } else if val.is_symlink() {
             CodexFsFileType::Symlink
         } else {
-            CodexFsFileType::Unknown
+            panic!()
         }
     }
 }
@@ -187,7 +186,7 @@ impl From<mode_t> for CodexFsFileType {
             S_IFBLK => CodexFsFileType::BlockDevice,
             S_IFSOCK => CodexFsFileType::Socket,
             S_IFLNK => CodexFsFileType::Symlink,
-            _ => CodexFsFileType::Unknown,
+            _ => panic!(),
         }
     }
 }

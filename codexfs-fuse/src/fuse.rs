@@ -63,15 +63,24 @@ fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileTy
         CodexFsFileType::Fifo => fuser::FileType::NamedPipe,
         CodexFsFileType::Socket => fuser::FileType::Socket,
         CodexFsFileType::Symlink => fuser::FileType::Symlink,
-        CodexFsFileType::Unknown => unreachable!(),
     }
 }
 
 fn codexfsfuse_inode_attr(inode: &Ref<Inode>) -> FileAttr {
+    let size = match &inode.file_type {
+        FileType::File(file) => file.size as _,
+        _ => 0,
+    };
+    let blocks = match &inode.file_type {
+        FileType::File(file) => {
+            (round_up(file.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _
+        }
+        _ => 0,
+    };
     FileAttr {
         ino: codexfsfuse_nid_to_ino(inode.common.nid),
-        size: inode.common.size as _,
-        blocks: (round_up(inode.common.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _,
+        size,
+        blocks,
         atime: SystemTime::now(),
         mtime: SystemTime::now(),
         ctime: SystemTime::now(),
@@ -155,7 +164,7 @@ impl Filesystem for CodexFs {
         info!("readlink(ino: {:#x?})", ino);
         let inode = codexfsfuse_get_inode(ino).unwrap();
 
-        let mut buf = vec![0; inode.borrow().common.size as usize];
+        let mut buf = vec![0; inode.borrow().common.meta_size() as usize];
         get_sb()
             .img_file
             .read_exact_at(&mut buf, inode.borrow().common.inode_meta_off())
