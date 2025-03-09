@@ -45,9 +45,7 @@ impl CompressManager {
 
     pub fn push_file(&mut self, inode: Rc<RefCell<Inode>>) -> Result<()> {
         assert!(inode.borrow().file_type.is_file());
-        let mut file = File::open(inode.borrow().path())?;
-        let mut content = Vec::new();
-        file.read_to_end(&mut content)?;
+        let content = inode.borrow().read_to_end()?;
         self.origin_data.extend(content);
         self.files.push((self.off, inode.clone()));
         self.off += inode.borrow().common.size as u64;
