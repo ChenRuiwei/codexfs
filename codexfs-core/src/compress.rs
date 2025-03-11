@@ -1,7 +1,5 @@
 use std::{
     cell::{OnceCell, RefCell},
-    fs::File,
-    io::Read,
     rc::Rc,
 };
 
@@ -49,7 +47,6 @@ impl CompressManager {
         self.origin_data.extend(content);
         self.files.push((self.off, inode.clone()));
         self.off += inode.borrow().get_file_meta().size as u64;
-
         log::info!("push file {}", inode.borrow().path().display());
         Ok(())
     }

@@ -221,7 +221,7 @@ impl Inode {
         let mut inode = Self {
             common: InodeCommon {
                 path: Some(path.into()),
-                nlink: if metadata.is_dir() { 2 } else { 0 },
+                nlink: 0,
                 ino: get_sb_mut().get_ino_and_inc(),
                 gid: metadata.gid() as _,
                 uid: metadata.uid() as _,
@@ -234,7 +234,7 @@ impl Inode {
         let (common, file_type) = inode.split_borrow_mut();
         match file_type {
             FileType::File(file) => file.size = metadata.len() as _,
-            FileType::Dir { .. } => {}
+            FileType::Dir { .. } => common.nlink = 2,
             FileType::CharDevice => todo!(),
             FileType::BlockDevice => todo!(),
             FileType::Fifo => todo!(),
@@ -365,10 +365,7 @@ impl Inode {
     }
 
     fn push_extent(&mut self, off: u32, len: u32, frag_off: u32) -> Option<()> {
-        let (common, file_type) = self.split_borrow_mut();
-        let FileType::File(file) = file_type else {
-            panic!()
-        };
+        let file = self.get_file_meta_mut();
         let codexfs_extent = CodexFsExtent { off, frag_off };
         log::info!("push extent {codexfs_extent:?}");
         file.extents.push(codexfs_extent);
@@ -567,9 +564,13 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
 
     let mut output = [0; CODEXFS_BLKSIZ as usize];
     let mut it = get_cmpr_mgr().files.iter();
-    let (off, inode) = it.next().unwrap();
-    let mut off = off;
-    let mut inode = inode;
+    let (mut off, mut inode) = {
+        if let Some(next) = it.next() {
+            (&next.0, &next.1)
+        } else {
+            panic!("no files to dump");
+        }
+    };
 
     while (get_cmpr_mgr().off as usize) < get_cmpr_mgr().origin_data.len() {
         let mut stream = Stream::new_microlzma_encoder(
@@ -613,12 +614,11 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
                 .push_extent((get_cmpr_mgr().off - *off) as _, len as _, frag_off as _)
                 .is_none()
             {
-                let Some((_off, _inode)) = it.next() else {
+                let Some(next) = it.next() else {
                     get_cmpr_mgr_mut().off += len;
                     break;
                 };
-                off = _off;
-                inode = _inode;
+                (off, inode) = (&next.0, &next.1);
             };
             get_cmpr_mgr_mut().off += len;
             frag_off += len;
@@ -822,10 +822,8 @@ pub fn fuse_read_inode_file(inode: Rc<RefCell<Inode>>, off: u32, len: u32) -> Re
     const MEM_LIMIT: usize = 16 * 1024 * 1024;
 
     let guard = inode.borrow();
-    let (common, file_type) = guard.split_borrow();
-    let FileType::File(file) = file_type else {
-        panic!();
-    };
+    let file = guard.get_file_meta();
+
     log::info!("off: {}, len {}", off, len);
     let len = min(len, file.size - off);
     let mut len_left = len;
@@ -846,12 +844,6 @@ pub fn fuse_read_inode_file(inode: Rc<RefCell<Inode>>, off: u32, len: u32) -> Re
         get_sb()
             .img_file
             .read_exact_at(&mut input, blk_id_to_addr(blk_id))?;
-
-        log::info!(
-            "end blk id {}, end blk sz {}",
-            get_sb().end_data_blk_id,
-            get_sb().end_data_blk_sz
-        );
         let comp_size = if get_sb().end_data_blk_id == blk_id {
             get_sb().end_data_blk_sz
         } else {
