@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Ok, Result};
 
-use crate::inode::Inode;
+use crate::inode::{File, Inode};
 
 static mut COMPRESS_MANAGER: OnceCell<CompressManager> = OnceCell::new();
 
@@ -29,7 +29,7 @@ pub fn get_cmpr_mgr_mut() -> &'static mut CompressManager {
 pub struct CompressManager {
     pub origin_data: Vec<u8>,
     pub off: u64,
-    pub files: Vec<(u64, Rc<RefCell<Inode>>)>,
+    pub files: Vec<(u64, Rc<RefCell<Inode<File>>>)>,
     pub lzma_level: u32,
 }
 
@@ -41,13 +41,15 @@ impl CompressManager {
         }
     }
 
-    pub fn push_file(&mut self, inode: Rc<RefCell<Inode>>) -> Result<()> {
-        assert!(inode.borrow().file_type.is_file());
+    pub fn push_file(&mut self, inode: Rc<RefCell<Inode<File>>>) -> Result<()> {
         let content = inode.borrow().read_to_end()?;
         self.origin_data.extend(content);
         self.files.push((self.off, inode.clone()));
-        self.off += inode.borrow().get_file_meta().size as u64;
-        log::info!("push file {}", inode.borrow().path().display());
+        self.off += inode.borrow().inner.size as u64;
+        log::info!(
+            "push file {}",
+            inode.borrow().meta.path.as_ref().unwrap().display()
+        );
         Ok(())
     }
 }

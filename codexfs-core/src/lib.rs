@@ -111,7 +111,7 @@ pub struct CodexFsInode {
     pub reserved: [u8; 40],
 }
 
-#[derive(Clone, Copy, Debug, Zeroable)]
+#[derive(Clone, Copy, Debug, Zeroable, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CodexFsFileType {
     File,

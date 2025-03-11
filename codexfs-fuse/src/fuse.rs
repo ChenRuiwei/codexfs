@@ -8,16 +8,16 @@ use std::{
 
 use bytemuck::from_bytes;
 use codexfs_core::{
-    inode::{fuse_load_inode, fuse_read_inode_file, get_inode, FileType, Inode},
+    CODEXFS_BLKSIZ, CodexFsFileType, CodexFsInode,
+    inode::{File, Inode, InodeHandle, InodeOps, fuse_load_inode, fuse_read_inode_file, get_inode},
     nid_to_inode_off,
     sb::get_sb,
     utils::round_up,
-    CodexFsFileType, CodexFsInode, CODEXFS_BLKSIZ,
 };
-use fuser::{FileAttr, Filesystem, Request, FUSE_ROOT_ID};
+use fuser::{FUSE_ROOT_ID, FileAttr, Filesystem, Request};
 use log::{debug, info};
 
-fn codexfsfuse_get_inode(ino: u64) -> Option<&'static Rc<RefCell<Inode>>> {
+fn codexfsfuse_get_inode(ino: u64) -> Option<&'static InodeHandle> {
     let nid = codexfsfuse_ino_to_nid(ino);
     let mut codexfs_inode_buf = vec![0; size_of::<CodexFsInode>()];
     get_sb()
@@ -30,28 +30,16 @@ fn codexfsfuse_get_inode(ino: u64) -> Option<&'static Rc<RefCell<Inode>>> {
 
 fn codexfsfuse_ino_to_nid(ino: u64) -> u64 {
     if ino == FUSE_ROOT_ID {
-        return get_sb().get_root().borrow().common.nid;
+        return get_sb().get_root().borrow().meta().nid;
     }
     ino - FUSE_ROOT_ID
 }
 
 fn codexfsfuse_nid_to_ino(nid: u64) -> u64 {
-    if nid == get_sb().get_root().borrow().common.nid {
+    if nid == get_sb().get_root().borrow().meta().nid {
         return FUSE_ROOT_ID;
     }
     nid + FUSE_ROOT_ID
-}
-
-fn codexfsfuse_filetype_cast(file_type: &FileType) -> fuser::FileType {
-    match file_type {
-        FileType::File { .. } => fuser::FileType::RegularFile,
-        FileType::Dir { .. } => fuser::FileType::Directory,
-        FileType::CharDevice => fuser::FileType::CharDevice,
-        FileType::BlockDevice => fuser::FileType::BlockDevice,
-        FileType::Fifo => fuser::FileType::NamedPipe,
-        FileType::Socket => fuser::FileType::Socket,
-        FileType::Symlink => fuser::FileType::Symlink,
-    }
 }
 
 fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileType {
@@ -66,30 +54,30 @@ fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileTy
     }
 }
 
-fn codexfsfuse_inode_attr(inode: &Ref<Inode>) -> FileAttr {
-    let size = match &inode.file_type {
-        FileType::File(file) => file.size as _,
-        _ => 0,
+fn codexfsfuse_inode_attr(inode: &Ref<dyn InodeOps>) -> FileAttr {
+    let size = if let Some(i) = inode.as_any().downcast_ref::<Inode<File>>() {
+        i.inner.size as _
+    } else {
+        0
     };
-    let blocks = match &inode.file_type {
-        FileType::File(file) => {
-            (round_up(file.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _
-        }
-        _ => 0,
+    let blocks = if let Some(i) = inode.as_any().downcast_ref::<Inode<File>>() {
+        (round_up(i.inner.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _
+    } else {
+        0
     };
     FileAttr {
-        ino: codexfsfuse_nid_to_ino(inode.common.nid),
+        ino: codexfsfuse_nid_to_ino(inode.meta().nid),
         size,
         blocks,
         atime: SystemTime::now(),
         mtime: SystemTime::now(),
         ctime: SystemTime::now(),
         crtime: SystemTime::now(),
-        kind: codexfsfuse_filetype_cast(&inode.file_type),
-        perm: inode.common.mode as _,
-        nlink: inode.common.nlink as _,
-        uid: inode.common.uid as _,
-        gid: inode.common.gid as _,
+        kind: codexfsfuse_codexfsfiletype_cast(inode.file_type()),
+        perm: inode.meta().mode as _,
+        nlink: inode.meta().nlink as _,
+        uid: inode.meta().uid as _,
+        gid: inode.meta().gid as _,
         rdev: 0,
         blksize: 0,
         flags: 0,
@@ -113,8 +101,15 @@ impl Filesystem for CodexFs {
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEntry) {
         info!("lookup(parent: {:#x?}, name {:?})", parent, name);
         let parent = codexfsfuse_get_inode(parent).unwrap();
-        for dentry in parent.borrow().get_dir_meta().dentries.iter() {
-            if dentry.file_name() == name {
+        for dentry in parent
+            .borrow()
+            .downcast_dir_ref()
+            .unwrap()
+            .inner
+            .dentries
+            .iter()
+        {
+            if *dentry.file_name == *name {
                 reply.entry(
                     &Duration::new(0, 0),
                     &codexfsfuse_inode_attr(&dentry.inode.borrow()),
@@ -164,10 +159,10 @@ impl Filesystem for CodexFs {
         info!("readlink(ino: {:#x?})", ino);
         let inode = codexfsfuse_get_inode(ino).unwrap();
 
-        let mut buf = vec![0; inode.borrow().common.meta_size() as usize];
+        let mut buf = vec![0; inode.borrow().meta().meta_size() as usize];
         get_sb()
             .img_file
-            .read_exact_at(&mut buf, inode.borrow().common.inode_meta_off())
+            .read_exact_at(&mut buf, inode.borrow().meta().inode_meta_off())
             .unwrap();
         reply.data(&buf);
     }
@@ -293,7 +288,12 @@ impl Filesystem for CodexFs {
         assert!(offset >= 0);
 
         let inode = codexfsfuse_get_inode(ino).unwrap();
-        let buf = fuse_read_inode_file(inode.clone(), offset as _, size as _).unwrap();
+        let buf = fuse_read_inode_file(
+            inode.borrow().downcast_file_ref().unwrap(),
+            offset as _,
+            size as _,
+        )
+        .unwrap();
         reply.data(&buf);
     }
 
@@ -384,17 +384,19 @@ impl Filesystem for CodexFs {
         log::info!("inode {:?}", inode);
         for (index, dentry) in inode
             .borrow()
-            .get_dir_meta()
+            .downcast_dir_ref()
+            .unwrap()
+            .inner
             .dentries
             .iter()
             .skip(offset as usize)
             .enumerate()
         {
             let buffer_full = reply.add(
-                codexfsfuse_nid_to_ino(dentry.inode.borrow().common.nid),
+                codexfsfuse_nid_to_ino(dentry.inode.borrow().meta().nid),
                 offset + index as i64 + 1,
                 codexfsfuse_codexfsfiletype_cast(dentry.file_type),
-                dentry.file_name(),
+                &dentry.file_name,
             );
             if buffer_full {
                 break;

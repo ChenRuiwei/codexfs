@@ -1,9 +1,4 @@
-use std::{
-    cell::{OnceCell, RefCell},
-    fs::File,
-    os::unix::fs::FileExt,
-    rc::Rc,
-};
+use std::{cell::OnceCell, fs::File, os::unix::fs::FileExt};
 
 use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, from_bytes};
@@ -12,14 +7,14 @@ use crate::{
     CODEXFS_BLKSIZ_BITS, CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsSuperBlock,
     buffer::{BufferType, get_bufmgr_mut},
     ino_t,
-    inode::Inode,
+    inode::{Inode, InodeHandle},
 };
 
 #[derive(Debug)]
 pub struct SuperBlock {
     pub ino: ino_t,
     pub img_file: File,
-    root: OnceCell<Rc<RefCell<Inode>>>,
+    root: OnceCell<InodeHandle>,
     pub end_data_blk_id: u32,
     pub end_data_blk_sz: u16,
 }
@@ -43,11 +38,11 @@ impl SuperBlock {
         Ok(())
     }
 
-    pub fn set_root(&self, root: Rc<RefCell<Inode>>) {
+    pub fn set_root(&self, root: InodeHandle) {
         self.root.set(root).unwrap()
     }
 
-    pub fn get_root(&self) -> &Rc<RefCell<Inode>> {
+    pub fn get_root(&self) -> &InodeHandle {
         self.root.get().unwrap()
     }
 
@@ -64,7 +59,7 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             magic: CODEXFS_MAGIC,
             checksum: 0,
             blkszbits: CODEXFS_BLKSIZ_BITS,
-            root_nid: sb.get_root().borrow().common.nid,
+            root_nid: sb.get_root().borrow().meta().nid,
             inos: sb.ino,
             blocks: 0,
             reserved: [0; _],

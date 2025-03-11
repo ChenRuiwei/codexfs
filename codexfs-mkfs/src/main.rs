@@ -52,7 +52,7 @@ fn main() {
     inode::get_inode_vec_mut()
         .inodes
         .iter()
-        .for_each(|i| println!("{:?}", i.borrow().common.path));
+        .for_each(|i| println!("{:?}", i.borrow().meta().path));
 
     inode::mkfs_dump_inode_file_data().unwrap();
     inode::mkfs_balloc_inode();
