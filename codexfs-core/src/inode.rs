@@ -5,7 +5,7 @@ mod symlink;
 
 use std::{
     any::Any,
-    cell::{Ref, RefCell},
+    cell::RefCell,
     cmp::min,
     fmt::Debug,
     fs::{self},
@@ -33,7 +33,7 @@ use crate::{
     utils::{is_dot_or_dotdot, round_down},
 };
 
-pub type InodeHandle = Rc<RefCell<dyn InodeOps>>;
+pub type InodeHandle = Rc<dyn InodeOps>;
 
 pub trait InodeFactory: Debug {
     fn from_path(path: &Path) -> Self;
@@ -42,10 +42,8 @@ pub trait InodeFactory: Debug {
 
 pub trait InodeOps: Debug {
     fn meta(&self) -> &InodeMeta;
-    fn meta_mut(&mut self) -> &mut InodeMeta;
     fn file_type(&self) -> CodexFsFileType;
     fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 impl dyn InodeOps {
@@ -53,29 +51,21 @@ impl dyn InodeOps {
         self.as_any().downcast_ref::<Inode<File>>()
     }
 
-    pub fn downcast_file_mut(&mut self) -> Option<&mut Inode<File>> {
-        self.as_any_mut().downcast_mut::<Inode<File>>()
-    }
-
     pub fn downcast_dir_ref(&self) -> Option<&Inode<Dir>> {
         self.as_any().downcast_ref::<Inode<Dir>>()
     }
-
-    pub fn downcast_dir_mut(&mut self) -> Option<&mut Inode<Dir>> {
-        self.as_any_mut().downcast_mut::<Inode<Dir>>()
-    }
 }
 
-impl From<&Ref<'_, dyn InodeOps>> for CodexFsInode {
-    fn from(inode: &Ref<'_, dyn InodeOps>) -> Self {
+impl From<&Rc<dyn InodeOps>> for CodexFsInode {
+    fn from(inode: &Rc<dyn InodeOps>) -> Self {
         let i = inode;
         let blk_id = if let Some(i) = i.as_any().downcast_ref::<Inode<File>>() {
-            i.inner.blk_id.unwrap_or(0)
+            i.inner.inner.borrow().blk_id.unwrap_or(0)
         } else {
             0
         };
         let blks = if let Some(i) = i.as_any().downcast_ref::<Inode<File>>() {
-            i.inner.extents.len() as _
+            i.inner.inner.borrow().extents.len() as _
         } else {
             0
         };
@@ -87,7 +77,7 @@ impl From<&Ref<'_, dyn InodeOps>> for CodexFsInode {
         Self {
             format: CodexFsInodeFormat::CODEXFS_INODE_FLAT_PLAIN,
             mode: inode.meta().mode,
-            nlink: inode.meta().nlink,
+            nlink: inode.meta().inner.borrow().nlink,
             size,
             blk_id,
             ino: inode.meta().ino,
@@ -99,13 +89,13 @@ impl From<&Ref<'_, dyn InodeOps>> for CodexFsInode {
     }
 }
 
-#[derive(Debug)]
-pub struct Inode<T> {
+#[derive(Debug, Default)]
+pub struct Inode<T: Debug + Default> {
     pub meta: InodeMeta,
     pub inner: T,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InodeMeta {
     pub path: Option<PathBuf>,
 
@@ -113,8 +103,12 @@ pub struct InodeMeta {
     pub uid: uid_t,
     pub gid: gid_t,
     pub mode: mode_t,
-    pub nlink: u16, // for dir: subdir number + 2; for file: hardlink number
+    pub inner: RefCell<InodeMetaInner>,
+}
 
+#[derive(Debug, Default)]
+pub struct InodeMetaInner {
+    pub nlink: u16, // for dir: subdir number + 2; for file: hardlink number
     pub nid: u64,
     pub meta_size: Option<u32>,
 }
@@ -125,23 +119,23 @@ impl InodeMeta {
     }
 
     pub fn inode_off(&self) -> u64 {
-        nid_to_inode_off(self.nid)
+        nid_to_inode_off(self.inner.borrow().nid)
     }
 
     pub fn inode_meta_off(&self) -> u64 {
-        nid_to_inode_meta_off(self.nid)
+        nid_to_inode_meta_off(self.inner.borrow().nid)
     }
 
     pub fn meta_size(&self) -> u32 {
-        self.meta_size.unwrap()
+        self.inner.borrow().meta_size.unwrap()
     }
 
-    pub fn set_meta_size(&mut self, size: u32) {
-        self.meta_size = Some(size)
+    pub fn set_meta_size(&self, size: u32) {
+        self.inner.borrow_mut().meta_size = Some(size)
     }
 
-    fn inc_nlink(&mut self) {
-        self.nlink += 1
+    fn inc_nlink(&self) {
+        self.inner.borrow_mut().nlink += 1
     }
 }
 
@@ -169,7 +163,7 @@ impl Dentry {
         Dentry {
             path: None,
             file_name,
-            file_type: { inode.borrow().file_type() },
+            file_type: { inode.file_type() },
             inode,
         }
     }
@@ -178,7 +172,7 @@ impl Dentry {
 impl From<&Dentry> for CodexFsDirent {
     fn from(dentry: &Dentry) -> Self {
         Self {
-            nid: dentry.inode.borrow().meta().nid,
+            nid: dentry.inode.meta().inner.borrow().nid,
             nameoff: 0,
             file_type: dentry.file_type,
             reserved: 0,
@@ -186,10 +180,10 @@ impl From<&Dentry> for CodexFsDirent {
     }
 }
 
-fn mkfs_load_inode_dir(path: &Path) -> Result<Rc<RefCell<Inode<Dir>>>> {
+fn mkfs_load_inode_dir(path: &Path) -> Result<Rc<Inode<Dir>>> {
     assert!(path.is_dir());
 
-    let dir = Rc::new(RefCell::new(Inode::<Dir>::from_path(path)));
+    let dir = Rc::new(Inode::<Dir>::from_path(path));
 
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -199,18 +193,15 @@ fn mkfs_load_inode_dir(path: &Path) -> Result<Rc<RefCell<Inode<Dir>>>> {
         let child_dentry = Dentry::new_path(&entry_path, child);
 
         if child_dentry.file_type.is_dir() {
-            dir.borrow_mut().meta.inc_nlink();
+            dir.meta.inc_nlink();
         }
-        dir.borrow_mut().add_dentry(child_dentry);
+        dir.add_dentry(child_dentry);
     }
 
     Ok(dir)
 }
 
-pub fn mkfs_load_inode(
-    path: &Path,
-    parent: Option<Weak<RefCell<Inode<Dir>>>>,
-) -> Result<InodeHandle> {
+pub fn mkfs_load_inode(path: &Path, parent: Option<Weak<Inode<Dir>>>) -> Result<InodeHandle> {
     let metadata = path.symlink_metadata()?;
     let ino = metadata.ino() as _;
 
@@ -219,32 +210,32 @@ pub fn mkfs_load_inode(
         CodexFsFileType::File => {
             let inode = get_inode(ino).cloned().unwrap_or_else(|| {
                 let child = Inode::<File>::from_path(path);
-                let inode = Rc::new(RefCell::new(child));
+                let inode = Rc::new(child);
                 get_cmpr_mgr_mut().push_file(inode.clone()).unwrap();
                 inode
             });
-            inode.borrow_mut().meta_mut().inc_nlink();
+            inode.meta().inc_nlink();
             inode
         }
         CodexFsFileType::Dir => {
             let inode = mkfs_load_inode_dir(path)?;
-            {
-                let mut dir = inode.borrow_mut();
-                let parent = parent.unwrap_or_else(|| Rc::downgrade(&inode));
-                dir.set_parent(parent);
-                let total_dirents_size =
-                    (dir.inner.dentries.len() + 2) * size_of::<CodexFsDirent>();
-                let total_name_size: usize = 1
-                    + 2
-                    + dir
-                        .inner
-                        .dentries
-                        .iter()
-                        .map(|d| d.file_name.len())
-                        .sum::<usize>();
-                dir.meta
-                    .set_meta_size((total_dirents_size + total_name_size) as _);
-            }
+            let parent = parent.unwrap_or_else(|| Rc::downgrade(&inode));
+            inode.set_parent(parent);
+            let total_dirents_size =
+                (inode.inner.inner.borrow().dentries.len() + 2) * size_of::<CodexFsDirent>();
+            let total_name_size: usize = 1
+                + 2
+                + inode
+                    .inner
+                    .inner
+                    .borrow()
+                    .dentries
+                    .iter()
+                    .map(|d| d.file_name.len())
+                    .sum::<usize>();
+            inode
+                .meta
+                .set_meta_size((total_dirents_size + total_name_size) as _);
             inode as _
         }
         CodexFsFileType::CharDevice => todo!(),
@@ -254,9 +245,9 @@ pub fn mkfs_load_inode(
         CodexFsFileType::Symlink => {
             let inode = get_inode(ino).cloned().unwrap_or_else(|| {
                 let child = Inode::<SymLink>::from_path(path);
-                Rc::new(RefCell::new(child))
+                Rc::new(child)
             });
-            inode.borrow_mut().meta_mut().inc_nlink();
+            inode.meta().inc_nlink();
             inode
         }
     };
@@ -272,38 +263,35 @@ pub fn mkfs_load_inode(
 pub fn mkfs_balloc_inode() {
     let buf_mgr = get_bufmgr_mut();
     for inode in get_inode_vec_mut().inodes.iter() {
-        let file_type = inode.borrow().file_type();
+        let file_type = inode.file_type();
         match file_type {
             CodexFsFileType::File => {
-                let mut guard = inode.borrow_mut();
-                let file = guard.downcast_file_mut().unwrap();
+                let inode = inode.downcast_file_ref().unwrap();
                 let addr = buf_mgr.balloc(
                     (size_of::<CodexFsInode>()
-                        + file.inner.extents.len() * size_of::<CodexFsExtent>())
+                        + inode.inner.inner.borrow().extents.len() * size_of::<CodexFsExtent>())
                         as _,
                     BufferType::Inode,
                 );
-                file.meta.nid = addr_to_nid(addr);
+                inode.meta().inner.borrow_mut().nid = addr_to_nid(addr);
             }
             CodexFsFileType::Dir => {
-                let mut guard = inode.borrow_mut();
                 let addr = buf_mgr.balloc(
-                    size_of::<CodexFsInode>() as u64 + guard.meta().meta_size.unwrap() as u64,
+                    size_of::<CodexFsInode>() as u64 + inode.meta().meta_size() as u64,
                     BufferType::Inode,
                 );
-                guard.meta_mut().nid = addr_to_nid(addr);
+                inode.meta().inner.borrow_mut().nid = addr_to_nid(addr);
             }
             CodexFsFileType::CharDevice => todo!(),
             CodexFsFileType::BlockDevice => todo!(),
             CodexFsFileType::Fifo => todo!(),
             CodexFsFileType::Socket => todo!(),
             CodexFsFileType::Symlink => {
-                let mut guard = inode.borrow_mut();
                 let addr = buf_mgr.balloc(
-                    size_of::<CodexFsInode>() as u64 + guard.meta().meta_size.unwrap() as u64,
+                    size_of::<CodexFsInode>() as u64 + inode.meta().meta_size() as u64,
                     BufferType::Inode,
                 );
-                guard.meta_mut().nid = addr_to_nid(addr);
+                inode.meta().inner.borrow_mut().nid = addr_to_nid(addr);
             }
         }
     }
@@ -312,14 +300,14 @@ pub fn mkfs_balloc_inode() {
 fn mkfs_dump_codexfs_inode(inode: &InodeHandle) -> Result<()> {
     log::info!(
         "path: {}, nid: {}",
-        inode.borrow().meta().path().display(),
-        inode.borrow().meta().nid
+        inode.meta().path().display(),
+        inode.meta().inner.borrow().nid
     );
-    let inode = inode.borrow();
-    let codexfs_inode = CodexFsInode::from(&inode);
-    get_sb()
-        .img_file
-        .write_all_at(bytes_of(&codexfs_inode), nid_to_inode_off(inode.meta().nid))?;
+    let codexfs_inode = CodexFsInode::from(inode);
+    get_sb().img_file.write_all_at(
+        bytes_of(&codexfs_inode),
+        nid_to_inode_off(inode.meta().inner.borrow().nid),
+    )?;
     Ok(())
 }
 
@@ -360,21 +348,21 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
         let mut frag_off = 0;
         while frag_off < stream.total_in() {
             inode
-                .borrow_mut()
                 .inner
+                .inner
+                .borrow_mut()
                 .blk_id
                 .get_or_insert(addr_to_blk_id(woff));
             log::info!(
                 "path {}, blk_id {:?}",
-                inode.borrow().meta.path().display(),
-                inode.borrow().inner.blk_id
+                inode.meta.path().display(),
+                inode.inner.inner.borrow().blk_id
             );
             let len = min(
                 stream.total_in() - frag_off,
-                *off + inode.borrow().inner.size as u64 - get_cmpr_mgr().off,
+                *off + inode.inner.size as u64 - get_cmpr_mgr().off,
             );
             if inode
-                .borrow_mut()
                 .push_extent((get_cmpr_mgr().off - *off) as _, len as _, frag_off as _)
                 .is_none()
             {
@@ -403,12 +391,11 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
 pub fn mkfs_dump_inode() -> Result<()> {
     let sb = get_sb();
     for inode in get_inode_vec_mut().inodes.iter() {
-        let guard = inode.borrow();
-        match inode.borrow().file_type() {
+        match inode.file_type() {
             CodexFsFileType::File => {
-                let file = guard.downcast_file_ref().unwrap();
-                let mut extents_off = file.meta.inode_meta_off();
-                for codexfs_extent in file.inner.extents.iter() {
+                let inode_file = inode.downcast_file_ref().unwrap();
+                let mut extents_off = inode_file.meta.inode_meta_off();
+                for codexfs_extent in inode_file.inner.inner.borrow().extents.iter() {
                     sb.img_file
                         .write_all_at(bytes_of(codexfs_extent), extents_off)?;
                     extents_off += size_of::<CodexFsExtent>() as u64;
@@ -416,14 +403,15 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 mkfs_dump_codexfs_inode(inode)?;
             }
             CodexFsFileType::Dir => {
-                let dir = guard.downcast_dir_ref().unwrap();
+                let inode_dir = inode.downcast_dir_ref().unwrap();
                 let mut dirents = Vec::new();
                 let mut names = Vec::new();
-                let mut nameoff =
-                    (size_of::<CodexFsDirent>() * (dir.inner.dentries.len() + 2)) as u16;
+                let mut nameoff = (size_of::<CodexFsDirent>()
+                    * (inode_dir.inner.inner.borrow().dentries.len() + 2))
+                    as u16;
 
                 let dot_dirent = CodexFsDirent {
-                    nid: dir.meta.nid,
+                    nid: inode_dir.meta.inner.borrow().nid,
                     nameoff,
                     file_type: CodexFsFileType::Dir,
                     reserved: 0,
@@ -433,7 +421,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 nameoff += 1;
 
                 let dotdot_dirent = CodexFsDirent {
-                    nid: dir.parent().borrow().meta.nid,
+                    nid: inode_dir.parent().meta.inner.borrow().nid,
                     nameoff,
                     file_type: CodexFsFileType::Dir,
                     reserved: 0,
@@ -442,28 +430,31 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 names.push("..");
                 nameoff += 2;
 
-                for dentry in dir.inner.dentries.iter() {
-                    let mut codexfs_dirent = CodexFsDirent::from(dentry);
-                    codexfs_dirent.nameoff = nameoff;
-                    dirents.push(codexfs_dirent);
-                    names.push(&dentry.file_name);
-                    nameoff += u16::try_from(dentry.file_name.len())?;
-                }
+                {
+                    let guard = inode_dir.inner.inner.borrow();
+                    for dentry in guard.dentries.iter() {
+                        let mut codexfs_dirent = CodexFsDirent::from(dentry);
+                        codexfs_dirent.nameoff = nameoff;
+                        dirents.push(codexfs_dirent);
+                        names.push(&dentry.file_name);
+                        nameoff += u16::try_from(dentry.file_name.len())?;
+                    }
 
-                let mut dirent_off = dir.meta.inode_meta_off();
-                for dirent in dirents {
-                    sb.img_file.write_all_at(bytes_of(&dirent), dirent_off)?;
-                    dirent_off += size_of::<CodexFsDirent>() as u64;
+                    let mut dirent_off = inode_dir.meta.inode_meta_off();
+                    for dirent in dirents {
+                        sb.img_file.write_all_at(bytes_of(&dirent), dirent_off)?;
+                        dirent_off += size_of::<CodexFsDirent>() as u64;
+                    }
+                    let mut name_off = dirent_off;
+                    for name in names {
+                        sb.img_file.write_all_at(name.as_bytes(), name_off)?;
+                        name_off += name.len() as u64;
+                    }
+                    assert_eq!(
+                        inode_dir.meta.inode_meta_off() + inode_dir.meta.meta_size() as u64,
+                        name_off
+                    );
                 }
-                let mut name_off = dirent_off;
-                for name in names {
-                    sb.img_file.write_all_at(name.as_bytes(), name_off)?;
-                    name_off += name.len() as u64;
-                }
-                assert_eq!(
-                    dir.meta.inode_meta_off() + dir.meta.meta_size() as u64,
-                    name_off
-                );
 
                 mkfs_dump_codexfs_inode(inode)?;
             }
@@ -472,10 +463,10 @@ pub fn mkfs_dump_inode() -> Result<()> {
             CodexFsFileType::Fifo => todo!(),
             CodexFsFileType::Socket => todo!(),
             CodexFsFileType::Symlink => {
-                let link = fs::read_link(guard.meta().path())?;
+                let link = fs::read_link(inode.meta().path())?;
                 sb.img_file.write_all_at(
                     link.to_string_lossy().as_bytes(),
-                    inode.borrow().meta().inode_meta_off(),
+                    inode.meta().inode_meta_off(),
                 )?;
                 mkfs_dump_codexfs_inode(inode)?;
             }
@@ -485,11 +476,8 @@ pub fn mkfs_dump_inode() -> Result<()> {
     Ok(())
 }
 
-pub fn fuse_load_inode_file(
-    nid: u64,
-    codexfs_inode: &CodexFsInode,
-) -> Result<Rc<RefCell<Inode<File>>>> {
-    let mut inode = Inode::<File>::from_codexfs_inode(codexfs_inode, nid);
+pub fn fuse_load_inode_file(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<Inode<File>>> {
+    let inode = Inode::<File>::from_codexfs_inode(codexfs_inode, nid);
     let mut codexfs_extent_off = nid_to_inode_meta_off(nid);
     let mut codexfs_extent_buf = [0; size_of::<CodexFsExtent>()];
 
@@ -500,26 +488,24 @@ pub fn fuse_load_inode_file(
             .read_exact_at(&mut codexfs_extent_buf, codexfs_extent_off)?;
         let extent: CodexFsExtent = *from_bytes::<CodexFsExtent>(&codexfs_extent_buf);
         log::info!("nid {nid} push extent");
-        inode.inner.extents.push(extent);
+        inode.inner.inner.borrow_mut().extents.push(extent);
         codexfs_extent_off += size_of::<CodexFsExtent>() as u64;
     }
 
-    Ok(Rc::new(RefCell::new(inode)))
+    Ok(Rc::new(inode))
 }
 
-pub fn fuse_load_inode_dir(
-    nid: u64,
-    codexfs_inode: &CodexFsInode,
-) -> Result<Rc<RefCell<Inode<Dir>>>> {
-    let mut inode = Inode::<Dir>::from_codexfs_inode(codexfs_inode, nid);
+pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<Inode<Dir>>> {
+    let inode = Inode::<Dir>::from_codexfs_inode(codexfs_inode, nid);
     let dirents_start = nid_to_inode_meta_off(nid);
     let mut dirent_buf = [0; size_of::<CodexFsDirent>()];
-    get_sb()
-        .img_file
-        .read_exact_at(&mut dirent_buf, dirents_start)?;
-    let codexfs_dirent: CodexFsDirent = *from_bytes(&dirent_buf);
-
-    let ndir = codexfs_dirent.nameoff / (size_of::<CodexFsDirent>() as u16);
+    let ndir = {
+        get_sb()
+            .img_file
+            .read_exact_at(&mut dirent_buf, dirents_start)?;
+        let codexfs_dirent: CodexFsDirent = *from_bytes(&dirent_buf);
+        codexfs_dirent.nameoff / (size_of::<CodexFsDirent>() as u16)
+    };
     let mut dirents = Vec::new();
     for i in 0..ndir {
         get_sb().img_file.read_exact_at(
@@ -548,14 +534,11 @@ pub fn fuse_load_inode_dir(
             continue;
         }
         let child_inode = fuse_load_inode(dirents[i as usize].nid)?;
-        assert_eq!(
-            dirents[i as usize].file_type,
-            child_inode.borrow().file_type()
-        );
+        assert_eq!(dirents[i as usize].file_type, child_inode.file_type());
         let child_dentry = Dentry::new_name(file_name, child_inode);
         inode.add_dentry(child_dentry);
     }
-    Ok(Rc::new(RefCell::new(inode)))
+    Ok(Rc::new(inode))
 }
 
 pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
@@ -581,19 +564,18 @@ pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
         CodexFsFileType::Socket => todo!(),
         CodexFsFileType::Symlink => {
             let inode = Inode::<SymLink>::from_codexfs_inode(codexfs_inode, nid);
-            Rc::new(RefCell::new(inode)) as _
+            Rc::new(inode) as _
         }
     };
 
-    insert_inode(inode.borrow().meta().ino, inode.clone());
+    insert_inode(inode.meta().ino, inode.clone());
     Ok(inode)
 }
 
 pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
     const MEM_LIMIT: usize = 16 * 1024 * 1024;
 
-    let guard = inode;
-    let inner = &guard.inner;
+    let inner = &inode.inner;
 
     log::info!("off: {}, len {}", off, len);
     let len = min(len, inner.size - off);
@@ -604,14 +586,18 @@ pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<V
 
     let mut input = [0; CODEXFS_BLKSIZ as usize];
 
-    log::info!("extents: {:?}", inner.extents);
-    let i = inner.extents.partition_point(|&e| e.off <= off);
+    log::info!("extents: {:?}", inner.inner.borrow().extents);
+    let i = inner
+        .inner
+        .borrow()
+        .extents
+        .partition_point(|&e| e.off <= off);
     log::info!("read_inode_file {}", i);
-    for (i, e) in inner.extents.iter().enumerate().skip(i - 1) {
+    for (i, e) in inner.inner.borrow().extents.iter().enumerate().skip(i - 1) {
         log::info!("i {i}, e {:?}", e);
 
         let mut output = Vec::with_capacity(MEM_LIMIT);
-        let blk_id = inner.blk_id.unwrap() + i as u32;
+        let blk_id = inner.inner.borrow().blk_id.unwrap() + i as u32;
         get_sb()
             .img_file
             .read_exact_at(&mut input, blk_id_to_addr(blk_id))?;
@@ -642,7 +628,6 @@ pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<V
 #[cfg(test)]
 mod test {
     use std::{
-        cell::RefCell,
         fs::{self, File},
         path::Path,
         rc::Rc,
@@ -652,7 +637,7 @@ mod test {
 
     use crate::{
         compress::set_cmpr_mgr,
-        inode::{InodeOps, get_inode_by_path, mkfs_load_inode},
+        inode::{InodeHandle, get_inode_by_path, mkfs_load_inode},
         sb::set_sb,
     };
 
@@ -686,14 +671,13 @@ mod test {
             let hello_inode = get_inode_by_path(&hello).unwrap();
             let hardlink_inode = get_inode_by_path(&hardlink).unwrap();
 
-            let root_parent = root_inode.borrow().downcast_dir_ref().unwrap().parent()
-                as Rc<RefCell<dyn InodeOps>>;
+            let root_parent = root_inode.downcast_dir_ref().unwrap().parent() as InodeHandle;
             assert!(Rc::ptr_eq(&root_parent, &root_inode));
             assert!(Rc::ptr_eq(hello_inode, hardlink_inode));
 
-            assert_eq!(root_inode.borrow().meta().nlink, 3);
-            assert_eq!(subdir_inode.borrow().meta().nlink, 2);
-            assert_eq!(hello_inode.borrow().meta().nlink, 2);
+            assert_eq!(root_inode.meta().inner.borrow().nlink, 3);
+            assert_eq!(subdir_inode.meta().inner.borrow().nlink, 2);
+            assert_eq!(hello_inode.meta().inner.borrow().nlink, 2);
         }
 
         fs::remove_dir_all(root)?;

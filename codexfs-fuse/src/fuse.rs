@@ -30,13 +30,13 @@ fn codexfsfuse_get_inode(ino: u64) -> Option<&'static InodeHandle> {
 
 fn codexfsfuse_ino_to_nid(ino: u64) -> u64 {
     if ino == FUSE_ROOT_ID {
-        return get_sb().get_root().borrow().meta().nid;
+        return get_sb().get_root().meta().inner.borrow().nid;
     }
     ino - FUSE_ROOT_ID
 }
 
 fn codexfsfuse_nid_to_ino(nid: u64) -> u64 {
-    if nid == get_sb().get_root().borrow().meta().nid {
+    if nid == get_sb().get_root().meta().inner.borrow().nid {
         return FUSE_ROOT_ID;
     }
     nid + FUSE_ROOT_ID
@@ -54,7 +54,7 @@ fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileTy
     }
 }
 
-fn codexfsfuse_inode_attr(inode: &Ref<dyn InodeOps>) -> FileAttr {
+fn codexfsfuse_inode_attr(inode: &InodeHandle) -> FileAttr {
     let size = if let Some(i) = inode.as_any().downcast_ref::<Inode<File>>() {
         i.inner.size as _
     } else {
@@ -66,7 +66,7 @@ fn codexfsfuse_inode_attr(inode: &Ref<dyn InodeOps>) -> FileAttr {
         0
     };
     FileAttr {
-        ino: codexfsfuse_nid_to_ino(inode.meta().nid),
+        ino: codexfsfuse_nid_to_ino(inode.meta().inner.borrow().nid),
         size,
         blocks,
         atime: SystemTime::now(),
@@ -75,7 +75,7 @@ fn codexfsfuse_inode_attr(inode: &Ref<dyn InodeOps>) -> FileAttr {
         crtime: SystemTime::now(),
         kind: codexfsfuse_codexfsfiletype_cast(inode.file_type()),
         perm: inode.meta().mode as _,
-        nlink: inode.meta().nlink as _,
+        nlink: inode.meta().inner.borrow().nlink as _,
         uid: inode.meta().uid as _,
         gid: inode.meta().gid as _,
         rdev: 0,
@@ -102,17 +102,18 @@ impl Filesystem for CodexFs {
         info!("lookup(parent: {:#x?}, name {:?})", parent, name);
         let parent = codexfsfuse_get_inode(parent).unwrap();
         for dentry in parent
-            .borrow()
             .downcast_dir_ref()
             .unwrap()
             .inner
+            .inner
+            .borrow()
             .dentries
             .iter()
         {
             if *dentry.file_name == *name {
                 reply.entry(
                     &Duration::new(0, 0),
-                    &codexfsfuse_inode_attr(&dentry.inode.borrow()),
+                    &codexfsfuse_inode_attr(&dentry.inode),
                     0,
                 );
                 return;
@@ -125,7 +126,6 @@ impl Filesystem for CodexFs {
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, fh: Option<u64>, reply: fuser::ReplyAttr) {
         info!("getattr(ino: {:#x?}, fh: {:#x?})", ino, fh);
         let inode = fuse_load_inode(codexfsfuse_ino_to_nid(ino)).unwrap();
-        let inode = inode.borrow();
         reply.attr(&Duration::new(0, 0), &codexfsfuse_inode_attr(&inode));
     }
 
@@ -159,10 +159,10 @@ impl Filesystem for CodexFs {
         info!("readlink(ino: {:#x?})", ino);
         let inode = codexfsfuse_get_inode(ino).unwrap();
 
-        let mut buf = vec![0; inode.borrow().meta().meta_size() as usize];
+        let mut buf = vec![0; inode.meta().meta_size() as usize];
         get_sb()
             .img_file
-            .read_exact_at(&mut buf, inode.borrow().meta().inode_meta_off())
+            .read_exact_at(&mut buf, inode.meta().inode_meta_off())
             .unwrap();
         reply.data(&buf);
     }
@@ -288,12 +288,8 @@ impl Filesystem for CodexFs {
         assert!(offset >= 0);
 
         let inode = codexfsfuse_get_inode(ino).unwrap();
-        let buf = fuse_read_inode_file(
-            inode.borrow().downcast_file_ref().unwrap(),
-            offset as _,
-            size as _,
-        )
-        .unwrap();
+        let buf = fuse_read_inode_file(inode.downcast_file_ref().unwrap(), offset as _, size as _)
+            .unwrap();
         reply.data(&buf);
     }
 
@@ -383,17 +379,18 @@ impl Filesystem for CodexFs {
         let inode = codexfsfuse_get_inode(ino).unwrap();
         log::info!("inode {:?}", inode);
         for (index, dentry) in inode
-            .borrow()
             .downcast_dir_ref()
             .unwrap()
             .inner
+            .inner
+            .borrow()
             .dentries
             .iter()
             .skip(offset as usize)
             .enumerate()
         {
             let buffer_full = reply.add(
-                codexfsfuse_nid_to_ino(dentry.inode.borrow().meta().nid),
+                codexfsfuse_nid_to_ino(dentry.inode.meta().inner.borrow().nid),
                 offset + index as i64 + 1,
                 codexfsfuse_codexfsfiletype_cast(dentry.file_type),
                 &dentry.file_name,

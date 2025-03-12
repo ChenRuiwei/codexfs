@@ -59,7 +59,7 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             magic: CODEXFS_MAGIC,
             checksum: 0,
             blkszbits: CODEXFS_BLKSIZ_BITS,
-            root_nid: sb.get_root().borrow().meta().nid,
+            root_nid: sb.get_root().meta().inner.borrow().nid,
             inos: sb.ino,
             blocks: 0,
             reserved: [0; _],

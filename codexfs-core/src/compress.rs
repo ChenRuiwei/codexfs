@@ -29,7 +29,7 @@ pub fn get_cmpr_mgr_mut() -> &'static mut CompressManager {
 pub struct CompressManager {
     pub origin_data: Vec<u8>,
     pub off: u64,
-    pub files: Vec<(u64, Rc<RefCell<Inode<File>>>)>,
+    pub files: Vec<(u64, Rc<Inode<File>>)>,
     pub lzma_level: u32,
 }
 
@@ -41,15 +41,12 @@ impl CompressManager {
         }
     }
 
-    pub fn push_file(&mut self, inode: Rc<RefCell<Inode<File>>>) -> Result<()> {
-        let content = inode.borrow().read_to_end()?;
+    pub fn push_file(&mut self, inode: Rc<Inode<File>>) -> Result<()> {
+        let content = inode.read_to_end()?;
         self.origin_data.extend(content);
         self.files.push((self.off, inode.clone()));
-        self.off += inode.borrow().inner.size as u64;
-        log::info!(
-            "push file {}",
-            inode.borrow().meta.path.as_ref().unwrap().display()
-        );
+        self.off += inode.inner.size as u64;
+        log::info!("push file {}", inode.meta.path.as_ref().unwrap().display());
         Ok(())
     }
 }
