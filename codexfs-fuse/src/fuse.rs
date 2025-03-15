@@ -56,12 +56,12 @@ fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileTy
 
 fn codexfsfuse_inode_attr(inode: &InodeHandle) -> FileAttr {
     let size = if let Some(i) = inode.as_any().downcast_ref::<Inode<File>>() {
-        i.inner.size as _
+        i.itype.size as _
     } else {
         0
     };
     let blocks = if let Some(i) = inode.as_any().downcast_ref::<Inode<File>>() {
-        (round_up(i.inner.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _
+        (round_up(i.itype.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _
     } else {
         0
     };
@@ -104,7 +104,7 @@ impl Filesystem for CodexFs {
         for dentry in parent
             .downcast_dir_ref()
             .unwrap()
-            .inner
+            .itype
             .inner
             .borrow()
             .dentries
@@ -381,7 +381,7 @@ impl Filesystem for CodexFs {
         for (index, dentry) in inode
             .downcast_dir_ref()
             .unwrap()
-            .inner
+            .itype
             .inner
             .borrow()
             .dentries

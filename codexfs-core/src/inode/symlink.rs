@@ -23,7 +23,7 @@ impl InodeFactory for Inode<SymLink> {
                     meta_size: Some(metadata.len() as _),
                 }),
             },
-            inner: SymLink::default(),
+            itype: SymLink::default(),
         }
     }
 
@@ -41,7 +41,7 @@ impl InodeFactory for Inode<SymLink> {
                     meta_size: Some(codexfs_inode.size),
                 }),
             },
-            inner: SymLink::default(),
+            itype: SymLink::default(),
         }
     }
 }

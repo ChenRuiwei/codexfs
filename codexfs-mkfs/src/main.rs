@@ -4,7 +4,7 @@ use std::{cell::OnceCell, fs::File, path::Path};
 
 use clap::Parser;
 use codexfs_core::{
-    compress::set_cmpr_mgr,
+    compress::{get_cmpr_mgr_mut, set_cmpr_mgr},
     inode,
     sb::{self, get_sb_mut, set_sb},
 };
@@ -52,6 +52,9 @@ fn main() {
     inode::get_inode_vec_mut()
         .iter()
         .for_each(|i| println!("{:?}", i.meta().path));
+
+    get_cmpr_mgr_mut().construct_diff_map();
+    get_cmpr_mgr_mut().optimize();
 
     inode::mkfs_dump_inode_file_data().unwrap();
     inode::mkfs_balloc_inode();

@@ -27,7 +27,7 @@ use crate::{
     CodexFsInodeFormat, addr_to_blk_id, addr_to_nid, blk_id_to_addr,
     buffer::{BufferType, get_bufmgr_mut},
     compress::{get_cmpr_mgr, get_cmpr_mgr_mut},
-    gid_t, ino_t, mode_t, nid_to_inode_meta_off, nid_to_inode_off,
+    gid_t, ino_t, mode_t, nid_to_inode_meta_off, nid_to_inode_off, off_t,
     sb::{get_sb, get_sb_mut},
     uid_t,
     utils::{is_dot_or_dotdot, round_down},
@@ -60,17 +60,17 @@ impl From<&Rc<dyn InodeOps>> for CodexFsInode {
     fn from(inode: &Rc<dyn InodeOps>) -> Self {
         let i = inode;
         let blk_id = if let Some(i) = i.as_any().downcast_ref::<Inode<File>>() {
-            i.inner.inner.borrow().blk_id.unwrap_or(0)
+            i.itype.inner.borrow().blk_id.unwrap_or(0)
         } else {
             0
         };
         let blks = if let Some(i) = i.as_any().downcast_ref::<Inode<File>>() {
-            i.inner.inner.borrow().extents.len() as _
+            i.itype.inner.borrow().extents.len() as _
         } else {
             0
         };
         let size = if let Some(i) = i.as_any().downcast_ref::<Inode<File>>() {
-            i.inner.size
+            i.itype.size
         } else {
             i.meta().meta_size()
         };
@@ -90,9 +90,9 @@ impl From<&Rc<dyn InodeOps>> for CodexFsInode {
 }
 
 #[derive(Debug, Default)]
-pub struct Inode<T: Debug + Default> {
+pub struct Inode<T> {
     pub meta: InodeMeta,
-    pub inner: T,
+    pub itype: T,
 }
 
 #[derive(Debug, Default)]
@@ -102,7 +102,6 @@ pub struct InodeMeta {
     pub uid: uid_t,
     pub gid: gid_t,
     pub mode: mode_t,
-
     pub inner: RefCell<InodeMetaInner>,
 }
 
@@ -222,11 +221,11 @@ pub fn mkfs_load_inode(path: &Path, parent: Option<Weak<Inode<Dir>>>) -> Result<
             let parent = parent.unwrap_or_else(|| Rc::downgrade(&inode));
             inode.set_parent(parent);
             let total_dirents_size =
-                (inode.inner.inner.borrow().dentries.len() + 2) * size_of::<CodexFsDirent>();
+                (inode.itype.inner.borrow().dentries.len() + 2) * size_of::<CodexFsDirent>();
             let total_name_size: usize = 1
                 + 2
                 + inode
-                    .inner
+                    .itype
                     .inner
                     .borrow()
                     .dentries
@@ -269,7 +268,7 @@ pub fn mkfs_balloc_inode() {
                 let inode = inode.downcast_file_ref().unwrap();
                 let addr = buf_mgr.balloc(
                     (size_of::<CodexFsInode>()
-                        + inode.inner.inner.borrow().extents.len() * size_of::<CodexFsExtent>())
+                        + inode.itype.inner.borrow().extents.len() * size_of::<CodexFsExtent>())
                         as _,
                     BufferType::Inode,
                 );
@@ -318,19 +317,19 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
     let mut it = get_cmpr_mgr().files.iter();
     let (mut off, mut inode) = {
         if let Some(next) = it.next() {
-            (&next.0, &next.1)
+            (0, next)
         } else {
             panic!("no files to dump");
         }
     };
 
-    while (goff as usize) < get_cmpr_mgr().origin_data.len() {
+    while (goff as usize) < get_cmpr_mgr().file_data.len() {
         let mut stream = Stream::new_microlzma_encoder(
             &LzmaOptions::new_preset(get_cmpr_mgr().lzma_level).unwrap(),
         )?;
         let status = stream
             .process(
-                &get_cmpr_mgr().origin_data[(goff) as usize..],
+                &get_cmpr_mgr().file_data[(goff) as usize..],
                 &mut output,
                 xz2::stream::Action::Finish,
             )
@@ -348,7 +347,7 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
         let mut frag_off = 0;
         while frag_off < stream.total_in() {
             inode
-                .inner
+                .itype
                 .inner
                 .borrow_mut()
                 .blk_id
@@ -356,21 +355,21 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
             log::info!(
                 "path {}, blk_id {:?}",
                 inode.meta.path().display(),
-                inode.inner.inner.borrow().blk_id
+                inode.itype.inner.borrow().blk_id
             );
             let len = min(
                 stream.total_in() - frag_off,
-                *off + inode.inner.size as u64 - goff,
+                off + inode.itype.size as u64 - goff,
             );
             if inode
-                .push_extent((goff - *off) as _, len as _, frag_off as _)
+                .push_extent((goff - off) as _, len as _, frag_off as _)
                 .is_none()
             {
                 let Some(next) = it.next() else {
                     goff += len;
                     break;
                 };
-                (off, inode) = (&next.0, &next.1);
+                (off, inode) = (off + inode.itype.size as off_t, next);
             };
             goff += len;
             frag_off += len;
@@ -395,7 +394,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
             CodexFsFileType::File => {
                 let inode_file = inode.downcast_file_ref().unwrap();
                 let mut extents_off = inode_file.meta.inode_meta_off();
-                for codexfs_extent in inode_file.inner.inner.borrow().extents.iter() {
+                for codexfs_extent in inode_file.itype.inner.borrow().extents.iter() {
                     sb.img_file
                         .write_all_at(bytes_of(codexfs_extent), extents_off)?;
                     extents_off += size_of::<CodexFsExtent>() as u64;
@@ -407,7 +406,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 let mut dirents = Vec::new();
                 let mut names = Vec::new();
                 let mut nameoff = (size_of::<CodexFsDirent>()
-                    * (inode_dir.inner.inner.borrow().dentries.len() + 2))
+                    * (inode_dir.itype.inner.borrow().dentries.len() + 2))
                     as u16;
 
                 let dot_dirent = CodexFsDirent {
@@ -431,7 +430,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 nameoff += 2;
 
                 {
-                    let guard = inode_dir.inner.inner.borrow();
+                    let guard = inode_dir.itype.inner.borrow();
                     for dentry in guard.dentries.iter() {
                         let mut codexfs_dirent = CodexFsDirent::from(dentry);
                         codexfs_dirent.nameoff = nameoff;
@@ -489,7 +488,7 @@ pub fn fuse_load_inode_file(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc
         )?;
         let extent: CodexFsExtent = *from_bytes::<CodexFsExtent>(&extent_buf);
         log::info!("nid {nid} push extent");
-        inode.inner.inner.borrow_mut().extents.push(extent);
+        inode.itype.inner.borrow_mut().extents.push(extent);
     }
 
     Ok(Rc::new(inode))
@@ -580,7 +579,7 @@ pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
 pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
     const MEM_LIMIT: usize = 16 * 1024 * 1024;
 
-    let inner = &inode.inner;
+    let inner = &inode.itype;
 
     log::info!("off: {}, len {}", off, len);
     let len = min(len, inner.size - off);

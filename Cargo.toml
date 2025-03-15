@@ -17,3 +17,4 @@ bitflags = "2.9"
 num-traits = "0.2"
 bytemuck = { version = "1.22", features = ["derive", "min_const_generics"] }
 anyhow = "1.0"
+tlsh-fixed = "0.1"

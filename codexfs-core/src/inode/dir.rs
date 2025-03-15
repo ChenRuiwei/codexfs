@@ -45,7 +45,7 @@ impl InodeFactory for Inode<Dir> {
                     meta_size: None,
                 }),
             },
-            inner: Dir::default(),
+            itype: Dir::default(),
         }
     }
 
@@ -63,7 +63,7 @@ impl InodeFactory for Inode<Dir> {
                     meta_size: Some(codexfs_inode.size),
                 }),
             },
-            inner: Dir {
+            itype: Dir {
                 ..Default::default()
             },
         }
@@ -97,7 +97,7 @@ impl Inode<Dir> {
     }
 
     pub(crate) fn parent(&self) -> Rc<Inode<Dir>> {
-        self.inner
+        self.itype
             .inner
             .borrow()
             .parent
@@ -108,10 +108,10 @@ impl Inode<Dir> {
     }
 
     pub(crate) fn set_parent(&self, parent: Weak<Inode<Dir>>) {
-        self.inner.inner.borrow_mut().parent = Some(parent)
+        self.itype.inner.borrow_mut().parent = Some(parent)
     }
 
     pub(crate) fn add_dentry(&self, dentry: Dentry) {
-        self.inner.inner.borrow_mut().dentries.push(dentry)
+        self.itype.inner.borrow_mut().dentries.push(dentry)
     }
 }
