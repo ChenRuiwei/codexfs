@@ -50,7 +50,6 @@ fn main() {
 
     sb::mkfs_balloc_super_block();
     inode::get_inode_vec_mut()
-        .inodes
         .iter()
         .for_each(|i| println!("{:?}", i.meta().path));
 

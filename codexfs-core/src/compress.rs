@@ -1,11 +1,11 @@
-use std::{
-    cell::{OnceCell, RefCell},
-    rc::Rc,
-};
+use std::{cell::OnceCell, rc::Rc};
 
 use anyhow::{Ok, Result};
 
-use crate::inode::{File, Inode};
+use crate::{
+    inode::{File, Inode},
+    off_t,
+};
 
 static mut COMPRESS_MANAGER: OnceCell<CompressManager> = OnceCell::new();
 
@@ -28,8 +28,8 @@ pub fn get_cmpr_mgr_mut() -> &'static mut CompressManager {
 #[derive(Default, Debug)]
 pub struct CompressManager {
     pub origin_data: Vec<u8>,
-    pub off: u64,
-    pub files: Vec<(u64, Rc<Inode<File>>)>,
+    pub off: off_t,
+    pub files: Vec<(off_t, Rc<Inode<File>>)>,
     pub lzma_level: u32,
 }
 

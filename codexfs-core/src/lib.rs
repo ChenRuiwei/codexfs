@@ -24,11 +24,11 @@ type uid_t = u16;
 type mode_t = u16;
 type ino_t = u32;
 type nid_t = u64;
-type blk_t = u32;
-type blk_size_t = u16;
-type blk_off_t = blk_size_t;
-type off_t = u64;
-type size_t = u32;
+type blk_t = u32; // numbers of blocks
+type blk_size_t = u16; // size of a block
+type blk_off_t = blk_size_t; // offset in a block
+type off_t = u64; // offset in block device
+type size_t = u32; // size of a file
 
 pub const CODEXFS_MAGIC: u32 = 114514;
 

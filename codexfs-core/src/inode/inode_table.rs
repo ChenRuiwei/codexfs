@@ -4,7 +4,7 @@ use crate::{ino_t, inode::InodeHandle};
 
 pub(crate) type InodeTable = HashMap<ino_t, InodeHandle>;
 
-pub(crate) fn get_inode_table_mut() -> &'static mut InodeTable {
+fn get_inode_table_mut() -> &'static mut InodeTable {
     static mut INODE_TABLE: OnceCell<InodeTable> = OnceCell::new();
     unsafe { INODE_TABLE.get_mut_or_init(HashMap::new) }
 }
@@ -22,11 +22,9 @@ pub(crate) fn insert_inode(ino: ino_t, inode: InodeHandle) {
     get_inode_table_mut().insert(ino, inode);
 }
 
-pub struct InodeVec {
-    pub inodes: Vec<InodeHandle>,
-}
+pub type InodeVec = Vec<InodeHandle>;
 
 pub fn get_inode_vec_mut() -> &'static mut InodeVec {
     static mut INODE_VEC: OnceCell<InodeVec> = OnceCell::new();
-    unsafe { INODE_VEC.get_mut_or_init(|| InodeVec { inodes: Vec::new() }) }
+    unsafe { INODE_VEC.get_mut_or_init(Vec::new) }
 }
