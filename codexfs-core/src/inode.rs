@@ -614,13 +614,12 @@ pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<V
         let mut stream =
             Stream::new_microlzma_decoder(comp_size as _, MEM_LIMIT as _, false, 8 * 1024 * 1024)?;
         let status = stream.process_vec(&input, &mut output, xz2::stream::Action::Finish)?;
-
+        assert_eq!(stream.total_out(), output.len() as _);
         log::info!("total_out {}", stream.total_out());
-        let len_consumed = min(len_left, stream.total_out() as u32 - e.frag_off);
+        // WARN: there will be an empty byte at the end of output buffer
+        let len_consumed = min(len_left, (stream.total_out() - 1) as u32 - e.frag_off);
         buf.extend(&output[e.frag_off as _..(e.frag_off + len_consumed) as _]);
         len_left -= len_consumed;
-        log::info!("output len {}", output.len());
-        log::info!("output {}", String::from_utf8_lossy_owned(output));
         if len_left == 0 {
             break;
         }
