@@ -17,49 +17,59 @@ use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
+use sb::get_sb;
 use utils::round_up;
 
-type gid_t = u16;
-type uid_t = u16;
-type mode_t = u16;
-type ino_t = u32;
-type nid_t = u64;
-type blk_t = u32; // numbers of blocks
-type blk_size_t = u16; // size of a block
-type blk_off_t = blk_size_t; // offset in a block
-type off_t = u64; // offset in block device
-type size_t = u32; // size of a file
+pub type gid_t = u16;
+pub type uid_t = u16;
+pub type mode_t = u16;
+pub type ino_t = u32;
+pub type nid_t = u64;
+pub type blk_t = u32; // numbers of blocks
+pub type blk_size_t = u32; // size of a block
+pub type blk_off_t = blk_size_t; // offset in a block
+pub type off_t = u64; // offset in block device
+pub type size_t = u32; // size of a file
 
 pub const CODEXFS_MAGIC: u32 = 114514;
-
-pub const CODEXFS_BLKSIZ_BITS: u8 = 12;
-pub const CODEXFS_BLKSIZ: blk_size_t = 1 << CODEXFS_BLKSIZ_BITS;
 pub const CODEXFS_SUPERBLK_OFF: u64 = 0;
-pub const CODEXFS_ISLOT_BITS: u64 = 6;
 
 pub fn addr_to_blk_id(addr: u64) -> blk_t {
-    (addr >> CODEXFS_BLKSIZ_BITS) as _
+    (addr >> get_sb().blksz_bits) as _
 }
 
-pub fn addr_to_blk_off(addr: u64) -> u16 {
-    addr as u16 & (CODEXFS_BLKSIZ - 1)
+pub fn addr_to_blk_off(addr: u64) -> blk_off_t {
+    addr as blk_off_t & (get_sb().blksz() - 1)
 }
 
 pub fn blk_id_to_addr(blk_id: blk_t) -> u64 {
-    (blk_id as u64) << CODEXFS_BLKSIZ_BITS
+    (blk_id as u64) << get_sb().blksz_bits
 }
 
 pub fn addr_to_nid(addr: u64) -> u64 {
-    assert_eq!(addr, round_up(addr, CODEXFS_ISLOT_BITS));
-    addr >> CODEXFS_ISLOT_BITS
+    assert_eq!(addr, round_up(addr, get_sb().islot_bits as _));
+    addr >> get_sb().islot_bits
 }
 
 pub fn nid_to_inode_off(nid: nid_t) -> u64 {
-    nid << CODEXFS_ISLOT_BITS
+    nid << get_sb().islot_bits
 }
 
 pub fn nid_to_inode_meta_off(nid: nid_t) -> u64 {
-    (nid + 1) << CODEXFS_ISLOT_BITS
+    (nid + 1) << get_sb().islot_bits
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct CodexFsFlags(u8);
+
+bitflags! {
+    impl CodexFsFlags: u8 {
+        const CODEXFS_INODE_SIZE			    = 1 << 0;
+        const CODEXFS_INODE_COMPRESSED_FULL		= 1 << 1;
+        const CODEXFS_INODE_FLAT_INLINE         = 1 << 2;
+        const CODEXFS_INODE_COMPRESSED_COMPACT  = 1 << 3;
+    }
 }
 
 // codexfs on-disk super block (currently 128 bytes)
@@ -68,38 +78,20 @@ pub fn nid_to_inode_meta_off(nid: nid_t) -> u64 {
 pub struct CodexFsSuperBlock {
     pub magic: u32,      // file system magic number
     pub checksum: u32,   // crc32c(super_block)
-    pub blkszbits: u8,   // filesystem block size in bit shift
+    pub blksz_bits: u8,  // filesystem block size in bit shift
     pub root_nid: nid_t, // nid of root directory
     pub inos: ino_t,     // total valid ino # (== f_files - f_favail)
+    pub islot_bits: u8,
 
     pub blocks: u32, // used for statfs
     pub end_data_blk_id: blk_t,
     pub end_data_blk_sz: blk_size_t,
-    pub reserved: [u8; 97],
-}
-
-// CODEXFS inode datalayout (i_format in on-disk inode):
-// 0 - uncompressed flat inode without tail-packing inline data:
-// 1 - compressed inode with non-compact indexes:
-// 2 - uncompressed flat inode with tail-packing inline data:
-// 3 - compressed inode with compact indexes:
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Pod, Zeroable)]
-#[repr(transparent)]
-pub struct CodexFsInodeFormat(u16);
-
-bitflags! {
-    impl CodexFsInodeFormat: u16 {
-        const CODEXFS_INODE_FLAT_PLAIN			= 1 << 0;
-        const CODEXFS_INODE_COMPRESSED_FULL		= 1 << 1;
-        const CODEXFS_INODE_FLAT_INLINE         = 1 << 2;
-        const CODEXFS_INODE_COMPRESSED_COMPACT  = 1 << 3;
-    }
+    pub reserved: [u8; 94],
 }
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C, packed)]
 pub struct CodexFsInode {
-    pub format: CodexFsInodeFormat,
     pub mode: mode_t,
     pub nlink: u16,
     pub size: size_t,
@@ -108,7 +100,7 @@ pub struct CodexFsInode {
     pub gid: gid_t,
     pub blk_id: blk_t,
     pub blks: u16,
-    pub reserved: [u8; 40],
+    pub reserved: [u8; 10],
 }
 
 #[derive(Clone, Copy, Debug, Zeroable, PartialEq, Eq)]
@@ -214,7 +206,7 @@ mod tests {
     #[test]
     fn check_ondisk_layout_definitions() {
         assert_eq!(size_of::<CodexFsSuperBlock>(), 128);
-        assert_eq!(size_of::<CodexFsInode>(), 1 << CODEXFS_ISLOT_BITS);
+        assert_eq!(size_of::<CodexFsInode>(), 32);
         assert_eq!(size_of::<CodexFsDirent>(), 12);
         assert_eq!(size_of::<CodexFsExtent>(), 8);
     }

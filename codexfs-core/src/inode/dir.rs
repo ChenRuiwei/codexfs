@@ -87,9 +87,7 @@ impl InodeOps for Inode<Dir> {
 impl Inode<Dir> {
     pub fn load_from_nid(nid: u64) -> Result<Rc<Self>> {
         let mut inode_buf = [0; size_of::<CodexFsInode>()];
-        get_sb()
-            .img_file
-            .read_exact_at(&mut inode_buf, nid_to_inode_off(nid))?;
+        get_sb().read_exact_at(&mut inode_buf, nid_to_inode_off(nid))?;
         let codexfs_inode: &CodexFsInode = from_bytes(&inode_buf);
         let inode = Rc::new(Self::from_codexfs_inode(codexfs_inode, nid));
         insert_inode(inode.meta.ino, inode.clone());

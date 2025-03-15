@@ -23,8 +23,8 @@ pub use symlink::*;
 use xz2::stream::{LzmaOptions, Stream};
 
 use crate::{
-    CODEXFS_BLKSIZ, CodexFsDirent, CodexFsExtent, CodexFsFileType, CodexFsInode,
-    CodexFsInodeFormat, addr_to_blk_id, addr_to_nid, blk_id_to_addr,
+    CodexFsDirent, CodexFsExtent, CodexFsFileType, CodexFsInode, addr_to_blk_id, addr_to_nid,
+    blk_id_to_addr, blk_t,
     buffer::{BufferType, get_bufmgr_mut},
     compress::{get_cmpr_mgr, get_cmpr_mgr_mut},
     gid_t, ino_t, mode_t, nid_to_inode_meta_off, nid_to_inode_off, off_t,
@@ -75,7 +75,6 @@ impl From<&Rc<dyn InodeOps>> for CodexFsInode {
             i.meta().meta_size()
         };
         Self {
-            format: CodexFsInodeFormat::CODEXFS_INODE_FLAT_PLAIN,
             mode: inode.meta().mode,
             nlink: inode.meta().inner.borrow().nlink,
             size,
@@ -210,7 +209,7 @@ pub fn mkfs_load_inode(path: &Path, parent: Option<Weak<Inode<Dir>>>) -> Result<
             let inode = get_inode(ino).cloned().unwrap_or_else(|| {
                 let child = Inode::<File>::from_path(path);
                 let inode = Rc::new(child);
-                get_cmpr_mgr_mut().push_file(inode.clone()).unwrap();
+                get_cmpr_mgr_mut().files.push(inode.clone());
                 inode
             });
             inode.meta().inc_nlink();
@@ -303,7 +302,7 @@ fn mkfs_dump_codexfs_inode(inode: &InodeHandle) -> Result<()> {
         inode.meta().inner.borrow().nid
     );
     let codexfs_inode = CodexFsInode::from(inode);
-    get_sb().img_file.write_all_at(
+    get_sb().write_all_at(
         bytes_of(&codexfs_inode),
         nid_to_inode_off(inode.meta().inner.borrow().nid),
     )?;
@@ -313,7 +312,7 @@ fn mkfs_dump_codexfs_inode(inode: &InodeHandle) -> Result<()> {
 pub fn mkfs_dump_inode_file_data() -> Result<()> {
     let mut goff = 0;
 
-    let mut output = [0; CODEXFS_BLKSIZ as usize];
+    let mut output = vec![0; get_sb().blksz() as usize];
     let mut it = get_cmpr_mgr().files.iter();
     let (mut off, mut inode) = {
         if let Some(next) = it.next() {
@@ -340,9 +339,9 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
             stream.total_in(),
             stream.total_out(),
         );
-        let woff = get_bufmgr_mut().balloc(CODEXFS_BLKSIZ as u64, BufferType::Data);
-        assert_eq!(woff, round_down(woff, CODEXFS_BLKSIZ as _));
-        get_sb().img_file.write_all_at(&output, woff).unwrap();
+        let woff = get_bufmgr_mut().balloc(get_sb().blksz() as u64, BufferType::Data);
+        assert_eq!(woff, round_down(woff, get_sb().blksz() as _));
+        get_sb().write_all_at(&output, woff).unwrap();
 
         let mut frag_off = 0;
         while frag_off < stream.total_in() {
@@ -388,15 +387,13 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
 }
 
 pub fn mkfs_dump_inode() -> Result<()> {
-    let sb = get_sb();
     for inode in get_inode_vec_mut().iter() {
         match inode.file_type() {
             CodexFsFileType::File => {
                 let inode_file = inode.downcast_file_ref().unwrap();
                 let mut extents_off = inode_file.meta.inode_meta_off();
                 for codexfs_extent in inode_file.itype.inner.borrow().extents.iter() {
-                    sb.img_file
-                        .write_all_at(bytes_of(codexfs_extent), extents_off)?;
+                    get_sb().write_all_at(bytes_of(codexfs_extent), extents_off)?;
                     extents_off += size_of::<CodexFsExtent>() as u64;
                 }
                 mkfs_dump_codexfs_inode(inode)?;
@@ -441,12 +438,12 @@ pub fn mkfs_dump_inode() -> Result<()> {
 
                     let mut dirent_off = inode_dir.meta.inode_meta_off();
                     for dirent in dirents {
-                        sb.img_file.write_all_at(bytes_of(&dirent), dirent_off)?;
+                        get_sb().write_all_at(bytes_of(&dirent), dirent_off)?;
                         dirent_off += size_of::<CodexFsDirent>() as u64;
                     }
                     let mut name_off = dirent_off;
                     for name in names {
-                        sb.img_file.write_all_at(name.as_bytes(), name_off)?;
+                        get_sb().write_all_at(name.as_bytes(), name_off)?;
                         name_off += name.len() as u64;
                     }
                     assert_eq!(
@@ -463,7 +460,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
             CodexFsFileType::Socket => todo!(),
             CodexFsFileType::Symlink => {
                 let link = fs::read_link(inode.meta().path())?;
-                sb.img_file.write_all_at(
+                get_sb().write_all_at(
                     link.to_string_lossy().as_bytes(),
                     inode.meta().inode_meta_off(),
                 )?;
@@ -482,7 +479,7 @@ pub fn fuse_load_inode_file(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc
 
     log::info!("nid {nid} blks {}", { codexfs_inode.blks });
     for i in 0..codexfs_inode.blks {
-        get_sb().img_file.read_exact_at(
+        get_sb().read_exact_at(
             &mut extent_buf,
             extents_off + (i as usize * size_of::<CodexFsExtent>()) as u64,
         )?;
@@ -499,16 +496,14 @@ pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<
     let dirents_off = nid_to_inode_meta_off(nid);
     let mut dirent_buf = [0; size_of::<CodexFsDirent>()];
     let ndir = {
-        get_sb()
-            .img_file
-            .read_exact_at(&mut dirent_buf, dirents_off)?;
+        get_sb().read_exact_at(&mut dirent_buf, dirents_off)?;
         let codexfs_dirent: CodexFsDirent = *from_bytes(&dirent_buf);
         codexfs_dirent.nameoff / (size_of::<CodexFsDirent>() as u16)
     };
 
     let mut dirents = Vec::new();
     for i in 0..ndir {
-        get_sb().img_file.read_exact_at(
+        get_sb().read_exact_at(
             &mut dirent_buf,
             dirents_off + (i as usize * size_of::<CodexFsDirent>()) as u64,
         )?;
@@ -524,9 +519,7 @@ pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<
             };
             let startoff = dirents[(i) as usize].nameoff;
             let mut name_buf = vec![0; (endoff - startoff) as usize];
-            get_sb()
-                .img_file
-                .read_exact_at(&mut name_buf, dirents_off + startoff as u64)?;
+            get_sb().read_exact_at(&mut name_buf, dirents_off + startoff as u64)?;
             String::from_utf8(name_buf)?
         };
         log::debug!("{}", file_name);
@@ -548,9 +541,7 @@ pub fn fuse_load_inode_dir(nid: u64, codexfs_inode: &CodexFsInode) -> Result<Rc<
 pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
     let mut inode_buf = [0; size_of::<CodexFsInode>()];
     log::info!("load inode nid {nid}");
-    get_sb()
-        .img_file
-        .read_exact_at(&mut inode_buf, nid_to_inode_off(nid))?;
+    get_sb().read_exact_at(&mut inode_buf, nid_to_inode_off(nid))?;
     let codexfs_inode: &CodexFsInode = from_bytes(&inode_buf);
 
     let file_type: CodexFsFileType = codexfs_inode.mode.into();
@@ -578,44 +569,37 @@ pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
 
 pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
     const MEM_LIMIT: usize = 16 * 1024 * 1024;
+    const DICT_SIZE: usize = 8 * 1024 * 1024;
 
-    let inner = &inode.itype;
+    log::info!("inode size {}, off {}, len {}", inode.itype.size, off, len);
 
-    log::info!("off: {}, len {}", off, len);
-    let len = min(len, inner.size - off);
-    let mut len_left = len;
+    let file = &inode.itype;
+    let mut len_left = min(len, file.size - off);
     let mut buf = Vec::new();
+    let mut input = vec![0; get_sb().blksz() as usize];
+    let mut output = Vec::with_capacity(MEM_LIMIT);
 
-    log::info!("off: {}, len {}", off, len);
-
-    let mut input = [0; CODEXFS_BLKSIZ as usize];
-
-    log::info!("extents: {:?}", inner.inner.borrow().extents);
-    let i = inner
+    let i = file
         .inner
         .borrow()
         .extents
         .partition_point(|&e| e.off <= off);
-    log::info!("read_inode_file {}", i);
-    for (i, e) in inner.inner.borrow().extents.iter().enumerate().skip(i - 1) {
-        log::info!("i {i}, e {:?}", e);
-
-        let mut output = Vec::with_capacity(MEM_LIMIT);
-        let blk_id = inner.inner.borrow().blk_id.unwrap() + i as u32;
-        get_sb()
-            .img_file
-            .read_exact_at(&mut input, blk_id_to_addr(blk_id))?;
+    for (i, e) in file.inner.borrow().extents.iter().enumerate().skip(i - 1) {
+        log::debug!("i {i}, e {:?}", e);
+        let blk_id = file.inner.borrow().blk_id.unwrap() + i as blk_t;
+        get_sb().read_exact_at(&mut input, blk_id_to_addr(blk_id))?;
         let comp_size = if get_sb().end_data_blk_id == blk_id {
             get_sb().end_data_blk_sz
         } else {
-            CODEXFS_BLKSIZ
+            get_sb().blksz()
         };
-        log::info!("blk_id {}, comp_size {}", blk_id, comp_size);
+        log::debug!("blk_id {}, comp_size {}", blk_id, comp_size);
+
         let mut stream =
-            Stream::new_microlzma_decoder(comp_size as _, MEM_LIMIT as _, false, 8 * 1024 * 1024)?;
+            Stream::new_microlzma_decoder(comp_size as _, MEM_LIMIT as _, false, DICT_SIZE as _)?;
         let status = stream.process_vec(&input, &mut output, xz2::stream::Action::Finish)?;
         assert_eq!(stream.total_out(), output.len() as _);
-        log::info!("total_out {}", stream.total_out());
+
         // WARN: there will be an empty byte at the end of output buffer
         let len_consumed = min(len_left, (stream.total_out() - 1) as u32 - e.frag_off);
         buf.extend(&output[e.frag_off as _..(e.frag_off + len_consumed) as _]);
@@ -623,6 +607,7 @@ pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<V
         if len_left == 0 {
             break;
         }
+        output.clear();
     }
 
     Ok(buf)

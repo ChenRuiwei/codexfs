@@ -1,12 +1,13 @@
 use std::{
-    array,
     cell::{OnceCell, RefCell},
     cmp::{self, Ordering},
     ops::{Deref, DerefMut},
     rc::Rc,
 };
 
-use crate::{CODEXFS_BLKSIZ, CodexFsInode, blk_id_to_addr, blk_off_t, blk_t, utils::round_up};
+use crate::{
+    CodexFsInode, blk_id_to_addr, blk_off_t, blk_size_t, blk_t, sb::get_sb, utils::round_up,
+};
 
 pub enum BufferType {
     Meta,
@@ -14,11 +15,11 @@ pub enum BufferType {
     Data,
 }
 
-pub fn get_align(btype: BufferType) -> u16 {
+pub fn get_align(btype: BufferType) -> blk_size_t {
     match btype {
         BufferType::Meta => 1,
         BufferType::Inode => size_of::<CodexFsInode>() as _,
-        BufferType::Data => CODEXFS_BLKSIZ,
+        BufferType::Data => get_sb().blksz(),
     }
 }
 
@@ -28,11 +29,11 @@ pub fn get_bufmgr_mut() -> &'static mut BufferManager {
 }
 
 pub struct BufferBlockTable(
-    [Vec<Rc<RefCell<BufferBlock>>>; (CODEXFS_BLKSIZ + 1) as _], // index means for unused size
+    Vec<Vec<Rc<RefCell<BufferBlock>>>>, // index means for unused size
 );
 
 impl Deref for BufferBlockTable {
-    type Target = [Vec<Rc<RefCell<BufferBlock>>>; (CODEXFS_BLKSIZ + 1) as _];
+    type Target = Vec<Vec<Rc<RefCell<BufferBlock>>>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -47,7 +48,7 @@ impl DerefMut for BufferBlockTable {
 
 impl BufferBlockTable {
     fn new() -> Self {
-        Self(array::from_fn(|_| Vec::new()))
+        Self(vec![Vec::new(); get_sb().blksz() as usize + 1])
     }
 }
 
@@ -69,7 +70,7 @@ impl BufferManager {
 
     pub fn balloc(&mut self, size: u64, btype: BufferType) -> u64 {
         let alignment = get_align(btype);
-        assert!(alignment <= CODEXFS_BLKSIZ);
+        assert!(alignment <= get_sb().blksz());
         let aligned_size = round_up(size, alignment as _);
 
         if let Some(addr) = self.bfind(aligned_size, alignment) {
@@ -79,13 +80,13 @@ impl BufferManager {
         self.balloc_contig(aligned_size, alignment)
     }
 
-    fn bfind(&mut self, aligned_size: u64, align: u16) -> Option<u64> {
+    fn bfind(&mut self, aligned_size: u64, align: blk_size_t) -> Option<u64> {
         assert_eq!(aligned_size, round_up(aligned_size, align as _));
-        if aligned_size > CODEXFS_BLKSIZ as _ {
+        if aligned_size > get_sb().blksz() as _ {
             return None;
         }
-        let size = aligned_size as u16;
-        for i in size..CODEXFS_BLKSIZ + 1 {
+        let size = aligned_size as _;
+        for i in size..get_sb().blksz() + 1 {
             let i = i as usize;
             if self.table[i].is_empty() {
                 continue;
@@ -99,14 +100,14 @@ impl BufferManager {
         None
     }
 
-    fn balloc_contig(&mut self, aligned_size: u64, align: u16) -> u64 {
+    fn balloc_contig(&mut self, aligned_size: u64, align: blk_size_t) -> u64 {
         assert_eq!(aligned_size, round_up(aligned_size, align as _));
         let aligned_off = round_up(self.tail_blk.borrow().blk_off, align);
-        let (addr, mut size_left) = match aligned_off.cmp(&CODEXFS_BLKSIZ) {
+        let (addr, mut size_left) = match aligned_off.cmp(&get_sb().blksz()) {
             Ordering::Less => {
-                assert!((aligned_off as u64 + aligned_size) > CODEXFS_BLKSIZ as u64);
+                assert!((aligned_off as u64 + aligned_size) > get_sb().blksz() as u64);
                 let addr = self.tail_blk.borrow().addr();
-                let size_left = aligned_size - ((CODEXFS_BLKSIZ - aligned_off) as u64);
+                let size_left = aligned_size - ((get_sb().blksz() - aligned_off) as u64);
                 (addr, size_left)
             }
             Ordering::Equal => {
@@ -119,7 +120,7 @@ impl BufferManager {
 
         while size_left > 0 {
             let mut buf_blk = BufferBlock::new(self.tail_blk_id() + 1);
-            buf_blk.blk_off = cmp::min(CODEXFS_BLKSIZ as u64, size_left) as _;
+            buf_blk.blk_off = cmp::min(get_sb().blksz() as u64, size_left) as _;
             size_left -= buf_blk.blk_off as u64;
             let buf_blk = Rc::new(RefCell::new(buf_blk));
             self.tail_blk = buf_blk.clone();
@@ -135,7 +136,7 @@ impl BufferManager {
 
     fn push_block(&mut self, buf_blk: Rc<RefCell<BufferBlock>>) {
         let off = buf_blk.borrow().blk_off;
-        self.table[(CODEXFS_BLKSIZ - off) as usize].push(buf_blk);
+        self.table[(get_sb().blksz() - off) as usize].push(buf_blk);
     }
 }
 

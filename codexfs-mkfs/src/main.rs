@@ -4,9 +4,10 @@ use std::{cell::OnceCell, fs::File, path::Path};
 
 use clap::Parser;
 use codexfs_core::{
+    blk_size_t,
     compress::{get_cmpr_mgr_mut, set_cmpr_mgr},
     inode,
-    sb::{self, get_sb_mut, set_sb},
+    sb::{self, get_sb, get_sb_mut, set_sb},
 };
 
 #[derive(Debug, Parser)]
@@ -14,6 +15,8 @@ use codexfs_core::{
 #[command(version("1.0"))]
 #[command(about = "A command-line tool to create an CODEX filesystem")]
 struct Args {
+    #[arg(short, long, default_value_t = 4096)]
+    pub blksz: blk_size_t,
     #[arg(index(1))]
     pub img_path: String,
     #[arg(index(2))]
@@ -44,6 +47,8 @@ fn main() {
     let args = parse_args();
     let img_file = File::create(&args.img_path).unwrap();
     set_sb(img_file);
+    get_sb_mut().blksz_bits = args.blksz.ilog2() as _;
+    assert_eq!(get_sb().blksz(), args.blksz, "invalid blksz");
     set_cmpr_mgr(6);
     let root = inode::mkfs_load_inode(Path::new(&args.src_path), None).unwrap();
     get_sb_mut().set_root(root);

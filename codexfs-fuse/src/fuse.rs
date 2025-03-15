@@ -1,14 +1,12 @@
 use std::{
-    cell::{Ref, RefCell},
     ffi::OsStr,
     os::unix::fs::FileExt,
-    rc::Rc,
     time::{Duration, SystemTime},
 };
 
 use bytemuck::from_bytes;
 use codexfs_core::{
-    CODEXFS_BLKSIZ, CodexFsFileType, CodexFsInode,
+    CodexFsFileType, CodexFsInode,
     inode::{File, Inode, InodeHandle, InodeOps, fuse_load_inode, fuse_read_inode_file, get_inode},
     nid_to_inode_off,
     sb::get_sb,
@@ -21,7 +19,6 @@ fn codexfsfuse_get_inode(ino: u64) -> Option<&'static InodeHandle> {
     let nid = codexfsfuse_ino_to_nid(ino);
     let mut codexfs_inode_buf = vec![0; size_of::<CodexFsInode>()];
     get_sb()
-        .img_file
         .read_exact_at(&mut codexfs_inode_buf, nid_to_inode_off(nid))
         .unwrap();
     let codexfs_inode: &CodexFsInode = from_bytes(&codexfs_inode_buf);
@@ -61,7 +58,7 @@ fn codexfsfuse_inode_attr(inode: &InodeHandle) -> FileAttr {
         0
     };
     let blocks = if let Some(i) = inode.as_any().downcast_ref::<Inode<File>>() {
-        (round_up(i.itype.size, CODEXFS_BLKSIZ as _) / (CODEXFS_BLKSIZ as u32)) as _
+        (round_up(i.itype.size, get_sb().blksz() as _) / (get_sb().blksz() as u32)) as _
     } else {
         0
     };
@@ -161,7 +158,6 @@ impl Filesystem for CodexFs {
 
         let mut buf = vec![0; inode.meta().meta_size() as usize];
         get_sb()
-            .img_file
             .read_exact_at(&mut buf, inode.meta().inode_meta_off())
             .unwrap();
         reply.data(&buf);
