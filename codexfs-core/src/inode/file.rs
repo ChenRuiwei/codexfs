@@ -12,8 +12,8 @@ use tlsh_fixed::Tlsh;
 
 use super::{Inode, InodeFactory, InodeMeta, InodeOps};
 use crate::{
-    CodexFsExtent, CodexFsFileType, CodexFsInode, blk_t, compress::get_tlsh, inode::InodeMetaInner,
-    sb::get_sb_mut, size_t,
+    CodexFsExtent, CodexFsFileType, CodexFsInode, blk_t, compress::calc_tlsh,
+    inode::InodeMetaInner, sb::get_sb_mut, size_t,
 };
 
 #[derive(Debug, Default)]
@@ -34,6 +34,10 @@ impl InodeFactory for Inode<File> {
     fn from_path(path: &Path) -> Self {
         let metadata = path.symlink_metadata().unwrap();
         log::info!("{}, size {}", path.display(), metadata.len());
+        let mut file = std::fs::File::open(path).unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+        let tlsh = calc_tlsh(&content);
         Self {
             meta: InodeMeta {
                 path: Some(path.into()),
@@ -49,7 +53,11 @@ impl InodeFactory for Inode<File> {
             },
             itype: File {
                 size: metadata.len() as _,
-                ..Default::default()
+                inner: RefCell::new(FileInner {
+                    content: Some(content),
+                    tlsh,
+                    ..Default::default()
+                }),
             },
         }
     }
@@ -94,25 +102,6 @@ impl InodeOps for Inode<File> {
 }
 
 impl Inode<File> {
-    pub fn read_to_end(&self) -> Result<Ref<[u8]>> {
-        {
-            let mut guard = self.itype.inner.borrow_mut();
-            if guard.content.is_none() {
-                let mut file = std::fs::File::open(self.meta.path()).unwrap();
-                let mut content = Vec::new();
-                file.read_to_end(&mut content).unwrap();
-                guard.tlsh = get_tlsh(&content);
-                guard.content = Some(content);
-            }
-        }
-        {
-            let guard = self.itype.inner.borrow();
-            Ok(Ref::map(guard, |inner| {
-                inner.content.as_ref().unwrap().as_slice()
-            }))
-        }
-    }
-
     pub(crate) fn push_extent(&self, off: u32, len: u32, frag_off: u32) -> Option<()> {
         let codexfs_extent = CodexFsExtent { off, frag_off };
         log::info!("push extent {codexfs_extent:?}");

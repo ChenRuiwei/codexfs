@@ -58,8 +58,7 @@ fn main() {
         .iter()
         .for_each(|i| println!("{:?}", i.meta().path));
 
-    get_cmpr_mgr_mut().construct_diff_map();
-    get_cmpr_mgr_mut().optimize();
+    get_cmpr_mgr_mut().reorder();
 
     inode::mkfs_dump_inode_file_data().unwrap();
     inode::mkfs_balloc_inode();

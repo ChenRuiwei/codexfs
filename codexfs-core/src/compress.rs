@@ -38,6 +38,15 @@ impl CompressManager {
         }
     }
 
+    pub fn reorder(&mut self) {
+        self.construct_diff_map();
+        self.optimize();
+        for file in self.files.iter() {
+            self.file_data
+                .extend(file.itype.inner.borrow().content.as_ref().unwrap());
+        }
+    }
+
     pub fn construct_diff_map(&mut self) {
         const DEFAULT_DIFF: usize = 1000;
         let len = self.files.len();
@@ -50,11 +59,18 @@ impl CompressManager {
                         &inode_pair.0.itype.inner.borrow().tlsh,
                         &inode_pair.1.itype.inner.borrow().tlsh,
                     );
+                    log::debug!("tlsh pair {:?}", tlsh_pair);
                     match tlsh_pair {
                         (Some(t0), Some(t1)) => t0.diff(t1, false),
                         _ => DEFAULT_DIFF,
                     }
                 };
+                log::info!(
+                    "diff of {} and {} is {}",
+                    inode_pair.0.meta.path().display(),
+                    inode_pair.1.meta.path().display(),
+                    diff
+                );
                 self.diff_mat[i][j] = diff;
                 self.diff_mat[j][i] = diff;
             }
@@ -83,17 +99,13 @@ impl CompressManager {
             .iter()
             .map(|idx| self.files[*idx].clone())
             .collect::<Vec<_>>();
-
-        for file in self.files.iter() {
-            self.file_data.extend(file.read_to_end().unwrap().iter());
-        }
     }
 }
 
-pub fn get_tlsh(content: &[u8]) -> Option<Tlsh> {
+pub fn calc_tlsh(content: &[u8]) -> Option<Tlsh> {
     let mut builder = TlshBuilder::new(
-        BucketKind::Bucket128,
-        ChecksumKind::OneByte,
+        BucketKind::Bucket256,
+        ChecksumKind::ThreeByte,
         Version::Version4,
     );
     builder.update(content);
