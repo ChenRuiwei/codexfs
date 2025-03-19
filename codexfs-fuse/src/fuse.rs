@@ -27,13 +27,13 @@ fn codexfsfuse_get_inode(ino: u64) -> Option<&'static InodeHandle> {
 
 fn codexfsfuse_ino_to_nid(ino: u64) -> u64 {
     if ino == FUSE_ROOT_ID {
-        return get_sb().get_root().meta().inner.borrow().nid;
+        return get_sb().root().meta().inner.borrow().nid;
     }
     ino - FUSE_ROOT_ID
 }
 
 fn codexfsfuse_nid_to_ino(nid: u64) -> u64 {
-    if nid == get_sb().get_root().meta().inner.borrow().nid {
+    if nid == get_sb().root().meta().inner.borrow().nid {
         return FUSE_ROOT_ID;
     }
     nid + FUSE_ROOT_ID

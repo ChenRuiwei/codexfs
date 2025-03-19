@@ -47,7 +47,7 @@ pub fn blk_id_to_addr(blk_id: blk_t) -> u64 {
 }
 
 pub fn addr_to_nid(addr: u64) -> u64 {
-    assert_eq!(addr, round_up(addr, get_sb().islot_bits as _));
+    assert_eq!(addr, round_up(addr, get_sb().islotsz() as _));
     addr >> get_sb().islot_bits
 }
 
@@ -65,10 +65,7 @@ pub struct CodexFsFlags(u8);
 
 bitflags! {
     impl CodexFsFlags: u8 {
-        const CODEXFS_INODE_SIZE			    = 1 << 0;
-        const CODEXFS_INODE_COMPRESSED_FULL		= 1 << 1;
-        const CODEXFS_INODE_FLAT_INLINE         = 1 << 2;
-        const CODEXFS_INODE_COMPRESSED_COMPACT  = 1 << 3;
+        const CODEXFS_COMPRESSED = 1 << 0;
     }
 }
 
@@ -86,7 +83,23 @@ pub struct CodexFsSuperBlock {
     pub blocks: u32, // used for statfs
     pub end_data_blk_id: blk_t,
     pub end_data_blk_sz: blk_size_t,
-    pub reserved: [u8; 94],
+    pub flags: CodexFsFlags,
+    pub reserved: [u8; 93],
+}
+
+#[derive(Clone, Copy, Zeroable)]
+#[repr(C, packed)]
+pub union CodexFsInodeUnion {
+    blks: u16,
+    blk_off: blk_off_t,
+}
+
+unsafe impl Pod for CodexFsInodeUnion {}
+
+impl Debug for CodexFsInodeUnion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "union {}", unsafe { self.blks })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -99,8 +112,8 @@ pub struct CodexFsInode {
     pub uid: uid_t,
     pub gid: gid_t,
     pub blk_id: blk_t,
-    pub blks: u16,
-    pub reserved: [u8; 10],
+    pub u: CodexFsInodeUnion,
+    pub reserved: [u8; 8],
 }
 
 #[derive(Clone, Copy, Debug, Zeroable, PartialEq, Eq)]

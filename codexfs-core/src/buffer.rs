@@ -12,6 +12,7 @@ use crate::{
 pub enum BufferType {
     Meta,
     Inode,
+    ZData,
     Data,
 }
 
@@ -19,7 +20,8 @@ pub fn get_align(btype: BufferType) -> blk_size_t {
     match btype {
         BufferType::Meta => 1,
         BufferType::Inode => size_of::<CodexFsInode>() as _,
-        BufferType::Data => get_sb().blksz(),
+        BufferType::ZData => get_sb().blksz(),
+        BufferType::Data => 1,
     }
 }
 
@@ -85,16 +87,17 @@ impl BufferManager {
         if aligned_size > get_sb().blksz() as _ {
             return None;
         }
-        let size = aligned_size as _;
-        for i in size..get_sb().blksz() + 1 {
-            let i = i as usize;
+        for i in (aligned_size as usize)..((get_sb().blksz() + 1) as usize) {
             if self.table[i].is_empty() {
                 continue;
             }
             let buf_blk = self.table[i].pop().unwrap();
-            let addr = buf_blk.borrow().addr();
-            buf_blk.borrow_mut().blk_off += size;
+            let addr = round_up(buf_blk.borrow().addr(), align as _);
+
+            let new_off = round_up(buf_blk.borrow().blk_off, align) + aligned_size as u32;
+            buf_blk.borrow_mut().blk_off = new_off;
             self.push_block(buf_blk);
+            assert_eq!(addr, round_up(addr, align as _));
             return Some(addr);
         }
         None
@@ -106,8 +109,10 @@ impl BufferManager {
         let (addr, mut size_left) = match aligned_off.cmp(&get_sb().blksz()) {
             Ordering::Less => {
                 assert!((aligned_off as u64 + aligned_size) > get_sb().blksz() as u64);
-                let addr = self.tail_blk.borrow().addr();
+                let addr = round_up(self.tail_blk.borrow().addr(), align as _);
                 let size_left = aligned_size - ((get_sb().blksz() - aligned_off) as u64);
+                let new_off = get_sb().blksz();
+                self.update_block(self.tail_blk.clone(), new_off);
                 (addr, size_left)
             }
             Ordering::Equal => {
@@ -127,6 +132,8 @@ impl BufferManager {
             self.push_block(buf_blk);
         }
 
+        log::debug!("alloc contig {}", addr);
+        assert_eq!(addr, round_up(addr, align as _));
         addr
     }
 
@@ -137,6 +144,21 @@ impl BufferManager {
     fn push_block(&mut self, buf_blk: Rc<RefCell<BufferBlock>>) {
         let off = buf_blk.borrow().blk_off;
         self.table[(get_sb().blksz() - off) as usize].push(buf_blk);
+    }
+
+    fn update_block(&mut self, buf_blk: Rc<RefCell<BufferBlock>>, new_off: blk_off_t) {
+        let off = buf_blk.borrow().blk_off;
+        for (i, e) in self.table[(get_sb().blksz() - off) as usize]
+            .iter()
+            .enumerate()
+        {
+            if Rc::ptr_eq(e, &buf_blk) {
+                self.table[(get_sb().blksz() - off) as usize].remove(i);
+                break;
+            }
+        }
+        buf_blk.borrow_mut().blk_off = new_off;
+        self.push_block(buf_blk);
     }
 }
 

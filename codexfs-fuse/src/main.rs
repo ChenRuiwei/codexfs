@@ -6,7 +6,7 @@ mod fuse;
 use std::{cell::OnceCell, fs::File};
 
 use clap::Parser;
-use codexfs_core::sb::{self, set_sb};
+use codexfs_core::sb::{self, SuperBlock, set_sb};
 use fuse::CodexFs;
 use fuser::MountOption;
 
@@ -43,9 +43,7 @@ fn main() {
 
     let args = parse_args();
     let img_file = File::open(&args.img_path).unwrap();
-    set_sb(img_file);
-
-    sb::fuse_load_super_block().unwrap();
+    sb::fuse_load_super_block(img_file).unwrap();
 
     let options = vec![MountOption::FSName("fuser".to_string())];
     fuser::mount2(CodexFs, &args.mnt_path, &options).unwrap();

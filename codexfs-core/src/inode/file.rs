@@ -5,15 +5,21 @@ use std::{
     io::Read,
     os::unix::fs::MetadataExt,
     path::Path,
+    rc::Rc,
 };
 
 use anyhow::{Ok, Result};
+use bytemuck::from_bytes;
 use tlsh_fixed::Tlsh;
 
 use super::{Inode, InodeFactory, InodeMeta, InodeOps};
 use crate::{
-    CodexFsExtent, CodexFsFileType, CodexFsInode, blk_t, compress::calc_tlsh,
-    inode::InodeMetaInner, sb::get_sb_mut, size_t,
+    CodexFsExtent, CodexFsFileType, CodexFsInode, blk_off_t, blk_size_t, blk_t,
+    compress::calc_tlsh,
+    inode::InodeMetaInner,
+    nid_to_inode_meta_off,
+    sb::{get_sb, get_sb_mut},
+    size_t,
 };
 
 #[derive(Debug, Default)]
@@ -25,6 +31,7 @@ pub struct File {
 #[derive(Debug, Default)]
 pub struct FileInner {
     pub blk_id: Option<blk_t>,
+    pub blk_off: Option<blk_off_t>,
     pub extents: Vec<CodexFsExtent>,
     pub content: Option<Vec<u8>>,
     pub tlsh: Option<Tlsh>,
@@ -80,10 +87,37 @@ impl InodeFactory for Inode<File> {
                 size: codexfs_inode.size,
                 inner: RefCell::new(FileInner {
                     blk_id: Some(codexfs_inode.blk_id),
+                    blk_off: if !get_sb().compress {
+                        Some(unsafe { codexfs_inode.u.blk_off })
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 }),
             },
         }
+    }
+
+    fn fuse_load(codexfs_inode: &CodexFsInode, nid: u64) -> Result<Rc<Self>> {
+        let inode = Self::from_codexfs_inode(codexfs_inode, nid);
+        let extents_off = nid_to_inode_meta_off(nid);
+        let mut extent_buf = [0; size_of::<CodexFsExtent>()];
+
+        if get_sb().compress {
+            let blks = unsafe { codexfs_inode.u.blks };
+            log::info!("nid {nid} blks {}", blks);
+            for i in 0..blks {
+                get_sb().read_exact_at(
+                    &mut extent_buf,
+                    extents_off + (i as usize * size_of::<CodexFsExtent>()) as u64,
+                )?;
+                let extent: CodexFsExtent = *from_bytes::<CodexFsExtent>(&extent_buf);
+                log::info!("nid {nid} push extent");
+                inode.itype.inner.borrow_mut().extents.push(extent);
+            }
+        }
+
+        Ok(Rc::new(inode))
     }
 }
 

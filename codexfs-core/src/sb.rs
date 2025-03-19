@@ -4,7 +4,8 @@ use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, from_bytes};
 
 use crate::{
-    CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsInode, CodexFsSuperBlock, blk_size_t, blk_t,
+    CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsFlags, CodexFsInode, CodexFsSuperBlock, blk_size_t,
+    blk_t,
     buffer::{BufferType, get_bufmgr_mut},
     ino_t,
     inode::{Inode, InodeHandle},
@@ -19,16 +20,16 @@ pub struct SuperBlock {
     root: Option<InodeHandle>,
     pub end_data_blk_id: blk_t,
     pub end_data_blk_sz: blk_size_t,
+    pub compress: bool,
 }
 
 impl SuperBlock {
-    fn new(img_file: File) -> Self {
+    pub fn new(img_file: File, blksz_bits: u8) -> Self {
         let islot_bits = size_of::<CodexFsInode>().ilog2() as _;
         assert_eq!(
             2_u8.pow(islot_bits as _) as usize,
             size_of::<CodexFsInode>()
         );
-        let blksz_bits = 12;
         Self {
             img_file: Some(img_file),
             root: None,
@@ -45,6 +46,7 @@ impl SuperBlock {
         self.end_data_blk_sz = codexfs_sb.end_data_blk_sz;
         self.islot_bits = codexfs_sb.islot_bits;
         self.blksz_bits = codexfs_sb.blksz_bits;
+        self.compress = codexfs_sb.flags.contains(CodexFsFlags::CODEXFS_COMPRESSED);
         Ok(())
     }
 
@@ -52,11 +54,16 @@ impl SuperBlock {
         1 << self.blksz_bits
     }
 
+    pub fn islotsz(&self) -> u8 {
+        assert_eq!(1 << self.islot_bits, size_of::<CodexFsInode>());
+        1 << self.islot_bits
+    }
+
     pub fn set_root(&mut self, root: InodeHandle) {
         self.root = Some(root)
     }
 
-    pub fn get_root(&self) -> &InodeHandle {
+    pub fn root(&self) -> &InodeHandle {
         self.root.as_ref().unwrap()
     }
 
@@ -79,25 +86,31 @@ impl SuperBlock {
 
 impl From<&SuperBlock> for CodexFsSuperBlock {
     fn from(sb: &SuperBlock) -> Self {
+        let flags = if sb.compress {
+            CodexFsFlags::CODEXFS_COMPRESSED
+        } else {
+            CodexFsFlags::empty()
+        };
         Self {
             magic: CODEXFS_MAGIC,
             checksum: 0,
             blksz_bits: sb.blksz_bits,
-            root_nid: sb.get_root().meta().inner.borrow().nid,
+            root_nid: sb.root().meta().inner.borrow().nid,
             inos: sb.ino,
             blocks: 0,
             reserved: [0; _],
             end_data_blk_id: sb.end_data_blk_id,
             end_data_blk_sz: sb.end_data_blk_sz,
             islot_bits: sb.islot_bits,
+            flags,
         }
     }
 }
 
 static mut SUPER_BLOCK: OnceCell<SuperBlock> = OnceCell::new();
 
-pub fn set_sb(img_file: File) {
-    unsafe { SUPER_BLOCK.set(SuperBlock::new(img_file)).unwrap() }
+pub fn set_sb(sb: SuperBlock) {
+    unsafe { SUPER_BLOCK.set(sb).unwrap() }
 }
 
 pub fn get_sb() -> &'static SuperBlock {
@@ -108,14 +121,14 @@ pub fn get_sb_mut() -> &'static mut SuperBlock {
     unsafe { SUPER_BLOCK.get_mut().unwrap() }
 }
 
-pub fn fuse_load_super_block() -> Result<()> {
+pub fn fuse_load_super_block(img_file: File) -> Result<()> {
+    set_sb(SuperBlock::new(img_file, 0));
     let mut sb_buf = [0; size_of::<CodexFsSuperBlock>()];
     get_sb().read_exact_at(&mut sb_buf, CODEXFS_SUPERBLK_OFF)?;
     let codexfs_sb: &CodexFsSuperBlock = from_bytes(&sb_buf);
     let magic = codexfs_sb.magic;
     assert_eq!(magic, CODEXFS_MAGIC);
-    let sb = get_sb_mut();
-    sb.from_codexfs_sb(codexfs_sb)?;
+    get_sb_mut().from_codexfs_sb(codexfs_sb)?;
     Ok(())
 }
 

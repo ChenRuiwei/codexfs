@@ -1,4 +1,6 @@
-use std::{any::Any, cell::RefCell, os::unix::fs::MetadataExt, path::Path};
+use std::{any::Any, cell::RefCell, os::unix::fs::MetadataExt, path::Path, rc::Rc};
+
+use anyhow::Result;
 
 use super::{Inode, InodeFactory, InodeMeta, InodeOps};
 use crate::{CodexFsFileType, CodexFsInode, inode::InodeMetaInner, sb::get_sb_mut};
@@ -43,6 +45,11 @@ impl InodeFactory for Inode<SymLink> {
             },
             itype: SymLink::default(),
         }
+    }
+
+    fn fuse_load(codexfs_inode: &CodexFsInode, nid: u64) -> Result<Rc<Self>> {
+        let inode = Inode::<SymLink>::from_codexfs_inode(codexfs_inode, nid);
+        Ok(Rc::new(inode))
     }
 }
 
