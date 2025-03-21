@@ -25,7 +25,7 @@ use xz2::stream::{LzmaOptions, Stream};
 
 use crate::{
     CodexFsDirent, CodexFsExtent, CodexFsFileType, CodexFsInode, CodexFsInodeUnion, addr_to_blk_id,
-    addr_to_blk_off, addr_to_nid, blk_id_to_addr, blk_t,
+    addr_to_blk_off, addr_to_nid, blk_id_to_addr, blk_size_t, blk_t,
     buffer::{BufferType, get_bufmgr_mut},
     compress::{get_cmpr_mgr, get_cmpr_mgr_mut},
     gid_t, ino_t, mode_t, nid_to_inode_meta_off, nid_to_inode_off, off_t,
@@ -349,7 +349,11 @@ pub fn mkfs_dump_inode_file_data_z() -> Result<()> {
         );
         let woff = get_bufmgr_mut().balloc(get_sb().blksz() as u64, BufferType::ZData);
         assert_eq!(woff, round_down(woff, get_sb().blksz() as _));
-        get_sb().write_all_at(&output, woff).unwrap();
+        let input_margin = get_sb().blksz() - (stream.total_out() as blk_size_t);
+        log::debug!("input margin {}", input_margin);
+        get_sb()
+            .write_all_at(&output, woff + input_margin as u64)
+            .unwrap();
 
         let mut frag_off = 0;
         while frag_off < stream.total_in() {
@@ -385,10 +389,13 @@ pub fn mkfs_dump_inode_file_data_z() -> Result<()> {
         get_sb_mut().end_data_blk_id = addr_to_blk_id(woff);
         get_sb_mut().end_data_blk_sz = stream.total_out() as _;
         log::info!(
-            "end blk id {}, end blk sz {}",
+            "end blk id {}, end blk sz {}, total in {}",
             get_sb().end_data_blk_id,
-            get_sb().end_data_blk_sz
+            get_sb().end_data_blk_sz,
+            stream.total_in(),
         );
+
+        output.fill(0);
     }
 
     Ok(())
@@ -526,6 +533,10 @@ pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
     Ok(inode)
 }
 
+pub fn fixup_insize(buf: &[u8]) -> usize {
+    buf.iter().position(|&x| x != 0).unwrap()
+}
+
 pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
     const MEM_LIMIT: usize = 16 * 1024 * 1024;
     const DICT_SIZE: usize = 8 * 1024 * 1024;
@@ -534,7 +545,7 @@ pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<V
 
     let file = &inode.itype;
     let mut len_left = min(len, file.size - off);
-    let mut buf = Vec::new();
+    let mut buf = vec![0; len as _];
     let mut input = vec![0; get_sb().blksz() as usize];
     let mut output = Vec::with_capacity(MEM_LIMIT);
 
@@ -552,16 +563,51 @@ pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<V
         } else {
             get_sb().blksz()
         };
-        log::debug!("blk_id {}, comp_size {}", blk_id, comp_size);
-
+        let input_margin = fixup_insize(&input);
+        log::debug!(
+            "blk_id {}, comp_size {}, input_margin {}",
+            blk_id,
+            comp_size,
+            input_margin
+        );
         let mut stream =
             Stream::new_microlzma_decoder(comp_size as _, MEM_LIMIT as _, false, DICT_SIZE as _)?;
-        let status = stream.process_vec(&input, &mut output, xz2::stream::Action::Finish)?;
-        assert_eq!(stream.total_out(), output.len() as _);
+        let status = stream.process_vec(
+            &input[input_margin..],
+            &mut output,
+            xz2::stream::Action::Finish,
+        )?;
+        // WARN: output may contain one extra byte so that we can not depend on the
+        // length of output
+        log::debug!("output len {}", output.len());
 
-        // WARN: there will be an empty byte at the end of output buffer
-        let len_consumed = min(len_left, (stream.total_out() - 1) as u32 - e.frag_off);
-        buf.extend(&output[e.frag_off as _..(e.frag_off + len_consumed) as _]);
+        let needed_output_len = if i + 1 < file.inner.borrow().extents.len() {
+            file.inner.borrow().extents[i + 1].off - file.inner.borrow().extents[i].off
+        } else {
+            file.size - file.inner.borrow().extents[i].off
+        };
+        let len_consumed = if off >= e.off {
+            min(len_left, needed_output_len - (off - e.off))
+        } else {
+            min(len_left, needed_output_len)
+        };
+        log::debug!(
+            "needed_output_len {}, len_consumed {}, len_left {}",
+            needed_output_len,
+            len_consumed,
+            len_left
+        );
+        if off >= e.off {
+            buf[..len_consumed as _].copy_from_slice(
+                &output[(e.frag_off + off - e.off) as _
+                    ..(e.frag_off + off - e.off + len_consumed) as _],
+            );
+        } else {
+            assert!(e.frag_off == 0);
+            buf[(e.off - off) as _..(e.off - off + len_consumed) as _]
+                .copy_from_slice(&output[..len_consumed as _]);
+        }
+        assert!(e.off == 0 || e.frag_off == 0);
         len_left -= len_consumed;
         if len_left == 0 {
             break;
