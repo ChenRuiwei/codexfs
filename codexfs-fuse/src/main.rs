@@ -6,7 +6,7 @@ mod fuse;
 use std::{cell::OnceCell, fs::File};
 
 use clap::Parser;
-use codexfs_core::sb::{self, SuperBlock, set_sb};
+use codexfs_core::sb;
 use fuse::CodexFs;
 use fuser::MountOption;
 

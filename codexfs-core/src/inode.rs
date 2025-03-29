@@ -9,8 +9,7 @@ use std::{
     cmp::min,
     fmt::Debug,
     fs::{self},
-    io::BufRead,
-    os::unix::fs::{FileExt, MetadataExt},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
 };
@@ -20,7 +19,6 @@ use bytemuck::{Zeroable, bytes_of, checked::from_bytes};
 pub use dir::*;
 pub use file::*;
 pub use inode_table::*;
-use libc::S_IFMT;
 pub use symlink::*;
 use xz2::stream::{LzmaOptions, Stream};
 
@@ -32,7 +30,7 @@ use crate::{
     gid_t, ino_t, mode_t, nid_to_inode_meta_off, nid_to_inode_off, off_t,
     sb::{get_sb, get_sb_mut},
     uid_t,
-    utils::{is_dot_or_dotdot, round_down},
+    utils::round_down,
 };
 
 pub type InodeHandle = Rc<dyn InodeOps>;

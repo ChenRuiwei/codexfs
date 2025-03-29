@@ -13,7 +13,6 @@ pub mod utils;
 
 use std::{fmt::Debug, os::unix::fs::FileTypeExt};
 
-use anyhow::Result;
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};

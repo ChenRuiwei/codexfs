@@ -1,6 +1,6 @@
 use std::{
     any::Any,
-    cell::{Ref, RefCell},
+    cell::RefCell,
     cmp::Ordering,
     io::Read,
     os::unix::fs::MetadataExt,
@@ -14,7 +14,7 @@ use tlsh_fixed::Tlsh;
 
 use super::{Inode, InodeFactory, InodeMeta, InodeOps};
 use crate::{
-    CodexFsExtent, CodexFsFileType, CodexFsInode, blk_off_t, blk_size_t, blk_t,
+    CodexFsExtent, CodexFsFileType, CodexFsInode, blk_off_t, blk_t,
     compress::calc_tlsh,
     inode::InodeMetaInner,
     nid_to_inode_meta_off,
