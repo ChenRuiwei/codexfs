@@ -48,6 +48,7 @@ fn codexfsfuse_codexfsfiletype_cast(file_type: CodexFsFileType) -> fuser::FileTy
         CodexFsFileType::Fifo => fuser::FileType::NamedPipe,
         CodexFsFileType::Socket => fuser::FileType::Socket,
         CodexFsFileType::Symlink => fuser::FileType::Symlink,
+        CodexFsFileType::Unknown => panic!(),
     }
 }
 

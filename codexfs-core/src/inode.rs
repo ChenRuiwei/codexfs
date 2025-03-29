@@ -20,6 +20,7 @@ use bytemuck::{Zeroable, bytes_of, checked::from_bytes};
 pub use dir::*;
 pub use file::*;
 pub use inode_table::*;
+use libc::S_IFMT;
 pub use symlink::*;
 use xz2::stream::{LzmaOptions, Stream};
 
@@ -256,6 +257,7 @@ pub fn mkfs_load_inode(path: &Path, parent: Option<Weak<Inode<Dir>>>) -> Result<
             inode.meta().inc_nlink();
             inode
         }
+        CodexFsFileType::Unknown => todo!(),
     };
 
     if get_inode(ino).is_none() {
@@ -299,6 +301,7 @@ pub fn mkfs_balloc_inode() {
                 );
                 inode.meta().inner.borrow_mut().nid = addr_to_nid(addr);
             }
+            CodexFsFileType::Unknown => todo!(),
         }
     }
 }
@@ -500,6 +503,7 @@ pub fn mkfs_dump_inode() -> Result<()> {
                 )?;
                 mkfs_dump_codexfs_inode(inode)?;
             }
+            CodexFsFileType::Unknown => todo!(),
         }
     }
 
@@ -527,6 +531,7 @@ pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
         CodexFsFileType::Fifo => todo!(),
         CodexFsFileType::Socket => todo!(),
         CodexFsFileType::Symlink => Inode::<SymLink>::fuse_load(codexfs_inode, nid)? as _,
+        CodexFsFileType::Unknown => todo!(),
     };
     insert_inode(inode.meta().ino, inode.clone());
 

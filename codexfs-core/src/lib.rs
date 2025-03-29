@@ -119,6 +119,7 @@ pub struct CodexFsInode {
 #[derive(Clone, Copy, Debug, Zeroable, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CodexFsFileType {
+    Unknown,
     File,
     Dir,
     CharDevice,
@@ -205,6 +206,8 @@ pub struct CodexFsDirent {
     pub reserved: u8,               // reserved
 }
 
+// TODO: off and frag_off may be compressed depending on the following condition
+// assert!(e.off == 0 || e.frag_off == 0);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 pub struct CodexFsExtent {
