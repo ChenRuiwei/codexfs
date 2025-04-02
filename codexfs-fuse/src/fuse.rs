@@ -7,7 +7,10 @@ use std::{
 use bytemuck::from_bytes;
 use codexfs_core::{
     CodexFsFileType, CodexFsInode,
-    inode::{File, Inode, InodeHandle, InodeOps, fuse_load_inode, fuse_read_inode_file, get_inode},
+    inode::{
+        File, Inode, InodeHandle, InodeOps, fuse_load_inode, fuse_read_inode_file,
+        fuse_read_inode_file_z, get_inode,
+    },
     nid_to_inode_off,
     sb::get_sb,
     utils::round_up,
@@ -285,8 +288,13 @@ impl Filesystem for CodexFs {
         assert!(offset >= 0);
 
         let inode = codexfsfuse_get_inode(ino).unwrap();
-        let buf = fuse_read_inode_file(inode.downcast_file_ref().unwrap(), offset as _, size as _)
-            .unwrap();
+        let buf = if get_sb().compress {
+            fuse_read_inode_file_z(inode.downcast_file_ref().unwrap(), offset as _, size as _)
+                .unwrap()
+        } else {
+            fuse_read_inode_file(inode.downcast_file_ref().unwrap(), offset as _, size as _)
+                .unwrap()
+        };
         reply.data(&buf);
     }
 

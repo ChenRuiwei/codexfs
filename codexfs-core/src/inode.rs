@@ -536,11 +536,25 @@ pub fn fuse_load_inode(nid: u64) -> Result<InodeHandle> {
     Ok(inode)
 }
 
+pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
+    log::info!("inode size {}, off {}, len {}", inode.itype.size, off, len);
+    let file = &inode.itype;
+    let len_left = min(len, file.size - off);
+    let mut buf = vec![0; len_left as _];
+    get_sb().read_exact_at(
+        &mut buf,
+        blk_id_to_addr(file.inner.borrow().blk_id.unwrap())
+            + file.inner.borrow().blk_off.unwrap() as u64
+            + off as u64,
+    )?;
+    Ok(buf)
+}
+
 pub fn fixup_insize(buf: &[u8]) -> usize {
     buf.iter().position(|&x| x != 0).unwrap()
 }
 
-pub fn fuse_read_inode_file(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
+pub fn fuse_read_inode_file_z(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
     const MEM_LIMIT: usize = 16 * 1024 * 1024;
     const DICT_SIZE: usize = 8 * 1024 * 1024;
 
