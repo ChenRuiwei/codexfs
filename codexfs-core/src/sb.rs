@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, fs::File, os::unix::fs::FileExt};
+use std::{cell::OnceCell, fs::File, io::Write, os::unix::fs::FileExt};
 
 use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, from_bytes};
@@ -9,6 +9,7 @@ use crate::{
     buffer::{BufferType, get_bufmgr_mut},
     ino_t,
     inode::{Inode, InodeHandle},
+    utils::round_up,
 };
 
 #[derive(Debug, Default)]
@@ -140,5 +141,12 @@ pub fn mkfs_balloc_super_block() {
 pub fn mkfs_dump_super_block() -> Result<()> {
     let codexfs_sb = CodexFsSuperBlock::from(get_sb());
     get_sb().write_all_at(bytes_of(&codexfs_sb), CODEXFS_SUPERBLK_OFF)?;
+    Ok(())
+}
+
+pub fn mkfs_align_block_size() -> Result<()> {
+    let len = get_sb().img_file.as_ref().unwrap().metadata()?.len();
+    let aligned_len = round_up(len, get_sb().blksz() as _);
+    get_sb().img_file.as_ref().unwrap().set_len(aligned_len)?;
     Ok(())
 }

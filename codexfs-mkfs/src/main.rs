@@ -69,4 +69,5 @@ fn main() {
     inode::mkfs_balloc_inode();
     inode::mkfs_dump_inode().unwrap();
     sb::mkfs_dump_super_block().unwrap();
+    sb::mkfs_align_block_size().unwrap();
 }
