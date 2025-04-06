@@ -80,10 +80,8 @@ pub struct CodexFsSuperBlock {
     pub islot_bits: u8,
 
     pub blocks: u32, // used for statfs
-    pub end_data_blk_id: blk_t,
-    pub end_data_blk_sz: blk_size_t,
     pub flags: CodexFsFlags,
-    pub reserved: [u8; 93],
+    pub reserved: [u8; 101],
 }
 
 #[derive(Clone, Copy, Zeroable)]

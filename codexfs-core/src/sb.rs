@@ -1,11 +1,10 @@
-use std::{cell::OnceCell, fs::File, io::Write, os::unix::fs::FileExt};
+use std::{cell::OnceCell, fs::File, os::unix::fs::FileExt};
 
 use anyhow::{Ok, Result};
 use bytemuck::{bytes_of, from_bytes};
 
 use crate::{
     CODEXFS_MAGIC, CODEXFS_SUPERBLK_OFF, CodexFsFlags, CodexFsInode, CodexFsSuperBlock, blk_size_t,
-    blk_t,
     buffer::{BufferType, get_bufmgr_mut},
     ino_t,
     inode::{Inode, InodeHandle},
@@ -19,8 +18,6 @@ pub struct SuperBlock {
     pub ino: ino_t,
     pub img_file: Option<File>,
     root: Option<InodeHandle>,
-    pub end_data_blk_id: blk_t,
-    pub end_data_blk_sz: blk_size_t,
     pub compress: bool,
 }
 
@@ -43,8 +40,6 @@ impl SuperBlock {
     pub fn from_codexfs_sb(&mut self, codexfs_sb: &CodexFsSuperBlock) -> Result<()> {
         let root = Inode::load_from_nid(codexfs_sb.root_nid)?;
         self.set_root(root);
-        self.end_data_blk_id = codexfs_sb.end_data_blk_id;
-        self.end_data_blk_sz = codexfs_sb.end_data_blk_sz;
         self.islot_bits = codexfs_sb.islot_bits;
         self.blksz_bits = codexfs_sb.blksz_bits;
         self.compress = codexfs_sb.flags.contains(CodexFsFlags::CODEXFS_COMPRESSED);
@@ -100,8 +95,6 @@ impl From<&SuperBlock> for CodexFsSuperBlock {
             inos: sb.ino,
             blocks: 0,
             reserved: [0; _],
-            end_data_blk_id: sb.end_data_blk_id,
-            end_data_blk_sz: sb.end_data_blk_sz,
             islot_bits: sb.islot_bits,
             flags,
         }

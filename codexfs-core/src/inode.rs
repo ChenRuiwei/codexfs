@@ -35,7 +35,7 @@ use crate::{
 
 pub type InodeHandle = Rc<dyn InodeOps>;
 
-pub trait InodeFactory: Debug {
+pub trait InodeFactory {
     fn from_path(path: &Path) -> Self;
     fn from_codexfs_inode(codexfs_inode: &CodexFsInode, nid: u64) -> Self;
     fn fuse_load(codexfs_inode: &CodexFsInode, nid: u64) -> Result<Rc<Self>>;
@@ -387,15 +387,6 @@ pub fn mkfs_dump_inode_file_data_z() -> Result<()> {
             frag_off += len;
         }
 
-        get_sb_mut().end_data_blk_id = addr_to_blk_id(woff);
-        get_sb_mut().end_data_blk_sz = stream.total_out() as _;
-        log::info!(
-            "end blk id {}, end blk sz {}, total in {}",
-            get_sb().end_data_blk_id,
-            get_sb().end_data_blk_sz,
-            stream.total_in(),
-        );
-
         output.fill(0);
     }
 
@@ -406,6 +397,7 @@ pub fn mkfs_dump_inode_file_data() -> Result<()> {
     for file in get_cmpr_mgr().files.iter() {
         let len = file.itype.inner.borrow().content.as_ref().unwrap().len();
         let addr = get_bufmgr_mut().balloc(len as _, BufferType::Data);
+        log::debug!("addr {addr:#x}");
         get_sb().write_all_at(file.itype.inner.borrow().content.as_ref().unwrap(), addr)?;
         file.itype
             .inner
@@ -555,8 +547,8 @@ pub fn fixup_insize(buf: &[u8]) -> usize {
 }
 
 pub fn fuse_read_inode_file_z(inode: &Inode<File>, off: u32, len: u32) -> Result<Vec<u8>> {
-    const MEM_LIMIT: usize = 16 * 1024 * 1024;
-    const DICT_SIZE: usize = 8 * 1024 * 1024;
+    const MEM_LIMIT: usize = 32 * 1024;
+    const DICT_SIZE: usize = 32 * 1024;
 
     log::info!("inode size {}, off {}, len {}", inode.itype.size, off, len);
 
@@ -575,12 +567,8 @@ pub fn fuse_read_inode_file_z(inode: &Inode<File>, off: u32, len: u32) -> Result
         log::debug!("i {i}, e {:?}", e);
         let blk_id = file.inner.borrow().blk_id.unwrap() + i as blk_t;
         get_sb().read_exact_at(&mut input, blk_id_to_addr(blk_id))?;
-        let comp_size = if get_sb().end_data_blk_id == blk_id {
-            get_sb().end_data_blk_sz
-        } else {
-            get_sb().blksz()
-        };
         let input_margin = fixup_insize(&input);
+        let comp_size = get_sb().blksz() as u64 - input_margin as u64;
         log::debug!(
             "blk_id {}, comp_size {}, input_margin {}",
             blk_id,
@@ -588,7 +576,7 @@ pub fn fuse_read_inode_file_z(inode: &Inode<File>, off: u32, len: u32) -> Result
             input_margin
         );
         let mut stream =
-            Stream::new_microlzma_decoder(comp_size as _, MEM_LIMIT as _, false, DICT_SIZE as _)?;
+            Stream::new_microlzma_decoder(comp_size, MEM_LIMIT as _, false, DICT_SIZE as _)?;
         let status = stream.process_vec(
             &input[input_margin..],
             &mut output,
@@ -597,6 +585,17 @@ pub fn fuse_read_inode_file_z(inode: &Inode<File>, off: u32, len: u32) -> Result
         // WARN: output may contain one extra byte so that we can not depend on the
         // length of output
         log::debug!("output len {}", output.len());
+        // log::debug!("output {:?}", output.len());
+
+        for i in 0..(output.len() / 8) + 1 {
+            print!("{:#x}:\t", i);
+            for j in 0..8 {
+                if 8 * i + j < output.len() {
+                    print!("{:#x}:{}\t", output[8 * i + j], output[8 * i + j] as char);
+                }
+            }
+            println!();
+        }
 
         let needed_output_len = if i + 1 < file.inner.borrow().extents.len() {
             file.inner.borrow().extents[i + 1].off - file.inner.borrow().extents[i].off
