@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     cell::RefCell,
-    os::unix::fs::{FileExt, MetadataExt},
+    os::unix::fs::MetadataExt,
     path::Path,
     rc::{Rc, Weak},
 };

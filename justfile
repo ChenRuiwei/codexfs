@@ -31,7 +31,7 @@ fuse-gdb:
 	rust-gdb --args target/{{MODE}}/codexfs-fuse -- {{FUSE_ARGS}}
 
 tokei:
-	tokei -e crates
+	tokei -e crates -e bench
 
 test:
 	cargo test

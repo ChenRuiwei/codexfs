@@ -1,4 +1,8 @@
-use std::{cell::OnceCell, collections::HashSet, rc::Rc};
+use std::{
+    cell::OnceCell,
+    collections::{HashSet, VecDeque},
+    rc::Rc,
+};
 
 use tlsh_fixed::{BucketKind, ChecksumKind, Tlsh, TlshBuilder, Version};
 
@@ -78,7 +82,8 @@ impl CompressManager {
     }
 
     pub fn optimize(&mut self) {
-        let initial_path = nearest_neighbor(&self.diff_mat);
+        // let initial_path = nearest_neighbor(&self.diff_mat);
+        let initial_path = nearest_neighbor_dual_end(&self.diff_mat);
 
         let optimized_path = two_opt_optimize(initial_path, &self.diff_mat);
         log::info!(
@@ -140,6 +145,52 @@ fn nearest_neighbor(diff_mat: &[Vec<usize>]) -> Vec<usize> {
         current = nearest;
     }
     path
+}
+
+fn nearest_neighbor_dual_end(diff_mat: &[Vec<usize>]) -> Vec<usize> {
+    let n = diff_mat.len();
+    let start = select_initial_node(diff_mat);
+    let mut path = VecDeque::new();
+    path.push_back(start);
+    let mut unvisited: HashSet<usize> = (0..n).collect();
+    unvisited.remove(&start);
+    let mut front = start;
+    let mut back = start;
+
+    while !unvisited.is_empty() {
+        let nearest_front = unvisited
+            .iter()
+            .min_by_key(|&&node| diff_mat[front][node])
+            .copied();
+        let nearest_back = unvisited
+            .iter()
+            .min_by_key(|&&node| diff_mat[back][node])
+            .copied();
+
+        let (candidate, is_front) = match (nearest_front, nearest_back) {
+            (Some(nf), Some(nb)) => {
+                if diff_mat[front][nf] <= diff_mat[back][nb] {
+                    (nf, true)
+                } else {
+                    (nb, false)
+                }
+            }
+            (Some(nf), None) => (nf, true),
+            (None, Some(nb)) => (nb, false),
+            (None, None) => unreachable!(),
+        };
+
+        if is_front {
+            path.push_front(candidate);
+            front = candidate;
+        } else {
+            path.push_back(candidate);
+            back = candidate;
+        }
+        unvisited.remove(&candidate);
+    }
+
+    path.into_iter().collect()
 }
 
 fn calculate_total_cost(path: &[usize], diff_mat: &[Vec<usize>]) -> usize {
