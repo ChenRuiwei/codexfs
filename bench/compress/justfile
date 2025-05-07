@@ -1,0 +1,43 @@
+ROOT := "../.."
+SOURCE := absolute_path("../../rootfs.tmp/")
+CODEXFS_IMAGE := justfile_directory() / "codexfs.img"
+EROFS_IMAGE := justfile_directory() / "erofs.img"
+SQUASHFS_IMAGE := justfile_directory() / "squashfs.img"
+SQUASHFS_4K_IMAGE := justfile_directory() / "squashfs.4K.img"
+SQUASHFS_8K_IMAGE := justfile_directory() / "squashfs.8K.img"
+SQUASHFS_16K_IMAGE := justfile_directory() / "squashfs.16K.img"
+TAR_IMGAE := justfile_directory() / "tar.img"
+
+
+bench: bench-codexfs bench-erofs bench-squashfs bench-tar stat
+
+stat:
+    stat -c '%s' {{CODEXFS_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{EROFS_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{SQUASHFS_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{SQUASHFS_4K_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{SQUASHFS_8K_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{SQUASHFS_16K_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{TAR_IMGAE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+
+bench-codexfs:
+    just --justfile {{ROOT}}/justfile RUST_LOG=off MODE=release SOURCE={{SOURCE}} IMAGE={{CODEXFS_IMAGE}} mkfs
+
+bench-erofs:
+    mkfs.erofs -zlzma,6 {{EROFS_IMAGE}} {{SOURCE}}
+
+bench-squashfs:
+    rm -f {{SQUASHFS_IMAGE}}
+    rm -f {{SQUASHFS_4K_IMAGE}}
+    rm -f {{SQUASHFS_8K_IMAGE}}
+    rm -f {{SQUASHFS_16K_IMAGE}}
+    mksquashfs {{SOURCE}} {{SQUASHFS_IMAGE}} -comp xz -no-duplicates
+    mksquashfs {{SOURCE}} {{SQUASHFS_4K_IMAGE}} -comp xz -no-duplicates -b 4K
+    mksquashfs {{SOURCE}} {{SQUASHFS_8K_IMAGE}} -comp xz -no-duplicates -b 8K
+    mksquashfs {{SOURCE}} {{SQUASHFS_16K_IMAGE}} -comp xz -no-duplicates -b 16K
+
+bench-tar:
+    tar cf {{TAR_IMGAE}} {{SOURCE}} --lzma
+
+clean:
+    rm -f *.img

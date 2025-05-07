@@ -1,0 +1,35 @@
+ROOT := "../.."
+SOURCE := absolute_path("../../rootfs.tmp/")
+CODEXFS_IMAGE := justfile_directory() / "codexfs.img"
+EROFS_IMAGE := justfile_directory() / "erofs.img"
+SQUASHFS_IMAGE := justfile_directory() / "squashfs.img"
+TAR_IMGAE := justfile_directory() / "tar.img"
+EROFS_NO_INLINE_IMAGE := justfile_directory() / "erofs.no-inline.img"
+
+bench: bench-codexfs bench-erofs bench-squashfs bench-tar bench-erofs-no-inline stat
+
+stat:
+    stat -c '%s' {{CODEXFS_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{EROFS_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{EROFS_NO_INLINE_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{SQUASHFS_IMAGE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+    stat -c '%s' {{TAR_IMGAE}} | awk '{printf "%.3f MiB\n", $1/1048576}'
+
+bench-codexfs:
+    just --justfile {{ROOT}}/justfile MODE=release SOURCE={{SOURCE}} IMAGE={{CODEXFS_IMAGE}} mkfs "-u"
+
+bench-erofs:
+    mkfs.erofs {{EROFS_IMAGE}} {{SOURCE}}
+
+bench-erofs-no-inline:
+    mkfs.erofs {{EROFS_NO_INLINE_IMAGE}} {{SOURCE}} -E^inline_data
+
+bench-squashfs:
+    rm -f {{SQUASHFS_IMAGE}}
+    mksquashfs {{SOURCE}} {{SQUASHFS_IMAGE}} -no-compression -no-duplicates
+
+bench-tar:
+    tar cf {{TAR_IMGAE}} {{SOURCE}}
+
+clean:
+    rm -f *.img
